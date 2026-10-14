@@ -22,9 +22,12 @@ export async function initDatabase(cfg: AdminConfig) {
 
   await sequelize.authenticate();
 
-  // Ensure our tables (and the new PhotonServer.Enabled column) exist without dropping any
-  // game data: alter-sync only the tables we own/extend.
-  await models.AdminUser.sync({ alter: true });
+  // AdminUsers has a stable schema. Using alter-sync here makes Sequelize repeatedly attempt
+  // to add the Username unique index on existing MySQL/MariaDB tables; over time this can hit
+  // MySQL's 64-index limit and crash the admin container with ER_TOO_MANY_KEYS.
+  // Plain sync creates the table on a fresh install but leaves existing admin data and indexes
+  // untouched on subsequent starts.
+  await models.AdminUser.sync();
   await models.CreditPackage.sync({ alter: true });
   await models.PaymentOrder.sync({ alter: true });
   await models.PlayerReport.sync({ alter: true }); // player-report inbox (owned by the admin app)
