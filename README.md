@@ -7,6 +7,8 @@ leaderboard, store + payments).
 
 > You set your own player slots. The whole server stack is free software.
 
+**Official project links:** [NekoNexus repository](https://github.com/NekoSune-GameServers-MP-Mods/NekoNexus) · [NekoSune Game Servers organization](https://github.com/NekoSune-GameServers-MP-Mods)
+
 NekoNexus is an independent, community-run continuation that began as a fork of the
 GPL-licensed [Paradise](https://github.com/festivaldev/Paradise) server, then rebuilt the
 transport (de-Photon shims), web services, admin dashboard, and many gameplay features from
