@@ -25,10 +25,22 @@ namespace NekoNexus.Client {
 
 		[HarmonyPatch("StartMatch"), HarmonyPostfix]
 		public static void StartMatch_Postfix(GameState __instance, int roundNumber, int endTime) {
-			if (GameState.Current.RoomData.TimeLimit == 0) {
-				//__instance.ResetRoundStartTime();
-				NekoNexusTraverse.SetField(__instance, "roundStartTime", endTime);
-			}
+			var timeLimit = GameState.Current.RoomData.TimeLimit;
+			var roundStartTime = timeLimit == 0
+				? (endTime & int.MaxValue)
+				: unchecked((endTime - timeLimit * 1000) & int.MaxValue);
+			NekoNexusTraverse.SetField(__instance, "roundStartTime", roundStartTime);
+		}
+
+		[HarmonyPatch("get_GameTime"), HarmonyPostfix]
+		public static void GameTime_Postfix(ref float __result) {
+			if (GameState.Current.RoomData == null || GameState.Current.RoomData.TimeLimit <= 0)
+				return;
+
+			var serverTime = Singleton<GameStateController>.Instance.Client.ServerTimeTicks;
+			var roundStartTime = NekoNexusTraverse.GetField<int>(GameState.Current, "roundStartTime");
+			var elapsedMilliseconds = unchecked((serverTime - roundStartTime) & int.MaxValue);
+			__result = elapsedMilliseconds / 1000f;
 		}
 
 		[HarmonyPatch("GameStateHelper", "UpdateMatchTime"), HarmonyPrefix]

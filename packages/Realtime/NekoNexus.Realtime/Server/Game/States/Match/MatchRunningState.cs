@@ -15,11 +15,14 @@ namespace NekoNexus.Realtime.Server.Game {
 			Room.PlayerKilled += OnPlayerKilled;
 			Room.PlayerRespawned += OnPlayerRespawned;
 
-			Room.RoundStartTime = Environment.TickCount;
+			Room.RoundStartedAtUtc = DateTime.UtcNow;
+			Room.RoundStartTime = BaseGameRoom.GetWireTimestamp();
 
 			if (Room.MetaData.TimeLimit > 0) {
-				Room.RoundEndTime = Room.RoundStartTime + (Room.MetaData.TimeLimit * 1000);
+				Room.RoundDeadlineUtc = Room.RoundStartedAtUtc.AddSeconds(Room.MetaData.TimeLimit);
+				Room.RoundEndTime = BaseGameRoom.AddWireMilliseconds(Room.RoundStartTime, (long)Room.MetaData.TimeLimit * 1000);
 			} else {
+				Room.RoundDeadlineUtc = DateTime.MaxValue;
 				Room.RoundEndTime = Room.RoundStartTime;
 			}
 
@@ -37,6 +40,7 @@ namespace NekoNexus.Realtime.Server.Game {
 		}
 
 		public override void OnExit() {
+			Room.MatchEnded -= OnMatchEnded;
 			Room.PlayerJoined -= OnPlayerJoined;
 			Room.PlayerLeft -= OnPlayerLeft;
 			Room.PlayerKilled -= OnPlayerKilled;
@@ -48,7 +52,7 @@ namespace NekoNexus.Realtime.Server.Game {
 		public override void OnUpdate() {
 			Room.PowerUpManager.Update();
 
-			if (Room.MetaData.TimeLimit > 0 && Room.RoundEndTime > 0 && Environment.TickCount > Room.RoundEndTime) {
+			if (Room.MetaData.TimeLimit > 0 && Room.RoundDeadlineUtc != DateTime.MinValue && DateTime.UtcNow >= Room.RoundDeadlineUtc) {
 				Room.HasRoundEnded = true;
 			}
 		}

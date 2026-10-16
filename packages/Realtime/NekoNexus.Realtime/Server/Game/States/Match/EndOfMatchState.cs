@@ -11,8 +11,9 @@ namespace NekoNexus.Realtime.Server.Game {
 			Room.PlayerJoined += OnPlayerJoined;
 			//Room.PlayerLeft += OnPlayerLeft;
 
-			Room.RoundEndTime = Environment.TickCount;
-			Room.RoundDurations.Add(TimeSpan.FromMilliseconds(Room.RoundEndTime - Room.RoundStartTime));
+			Room.RoundEndTime = BaseGameRoom.GetWireTimestamp();
+			if (Room.RoundStartedAtUtc != DateTime.MinValue)
+				Room.RoundDurations.Add(DateTime.UtcNow - Room.RoundStartedAtUtc);
 
 			if (Room.MetaData.GameMode == GameModeType.DeathMatch) {
 				short killsRemaining = (short)Room.MetaData.KillLimit;

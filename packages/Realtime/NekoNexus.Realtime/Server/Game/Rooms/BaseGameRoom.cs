@@ -16,6 +16,14 @@ namespace NekoNexus.Realtime.Server.Game {
 		public const float TICK_TRATE = 9.5f;
 		public const float ARMOR_ABSORPTION = 0.66f;
 
+		// Photon client timestamps are exposed as a non-negative 31-bit millisecond clock.
+		// Keep match timestamps in that same domain and use UTC deadlines server-side, so
+		// Environment.TickCount's sign/wrap can't freeze the HUD or prevent round completion.
+		public static int GetWireTimestamp() => Environment.TickCount & int.MaxValue;
+
+		public static int AddWireMilliseconds(int timestamp, long milliseconds) =>
+			(int)(((long)timestamp + milliseconds) & int.MaxValue);
+
 		protected static readonly ILog Log = LogManager.GetLogger(nameof(BaseGameRoom));
 		protected static readonly ILog ChatLog = LogManager.GetLogger("ChatLog");
 
@@ -61,6 +69,8 @@ namespace NekoNexus.Realtime.Server.Game {
 		public int RoundNumber;
 		public int RoundStartTime;
 		public int RoundEndTime;
+		public DateTime RoundStartedAtUtc;
+		public DateTime RoundDeadlineUtc;
 		public List<TimeSpan> RoundDurations = new List<TimeSpan>();
 		public bool HasRoundEnded;
 
@@ -160,6 +170,8 @@ namespace NekoNexus.Realtime.Server.Game {
 			RoundNumber = 0;
 			RoundStartTime = int.MinValue;
 			RoundEndTime = int.MinValue;
+			RoundStartedAtUtc = DateTime.MinValue;
+			RoundDeadlineUtc = DateTime.MinValue;
 			RoundDurations.Clear();
 
 			//NextPlayerId = (byte)(Peers.Select(_ => _.Actor.ActorInfo.PlayerId).ToArray().Max() + 1);
@@ -489,6 +501,7 @@ namespace NekoNexus.Realtime.Server.Game {
 
 				player.Actor.Movement.Position = spawn.Position;
 				player.Actor.Movement.HorizontalRotation = Conversion.Angle2Byte(spawn.Rotation.y);
+				RecordBotRoutePoint(player);
 
 				player.Actor.LastRespawnTime = DateTime.UtcNow;
 				player.Actor.NextRespawnTime = DateTime.MinValue;
@@ -635,6 +648,11 @@ namespace NekoNexus.Realtime.Server.Game {
 					return;
 				if (Math.Abs((player.Actor.LastRespawnTime - DateTime.UtcNow).TotalSeconds) < 2)
 					return;
+
+				// A bot can retaliate only after this real player's client has confirmed a weapon
+				// ray hit on it. This gives the bot short-lived, map-physics-backed sight evidence.
+				if (player.IsBot && !peer.IsBot)
+					NotifyBotOfConfirmedHit(player, peer);
 
 				if (!GameServerApplication.Instance.Configuration.GameplaySettings.AllowFriendlyFire) {
 					if (peer.Actor.ActorInfo.TeamID == player.Actor.ActorInfo.TeamID && peer.Actor.ActorInfo.TeamID != TeamID.NONE)

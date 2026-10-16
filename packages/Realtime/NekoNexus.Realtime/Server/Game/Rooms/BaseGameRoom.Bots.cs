@@ -65,27 +65,31 @@ namespace NekoNexus.Realtime.Server.Game {
 			}
 		}
 
-		private bool TryGetBotRoutePoint(GamePeer target, Vector3 botPosition, out BotRoutePoint point) {
+		private bool TryGetBotRoutePoint(GamePeer preferredTarget, Vector3 botPosition, out BotRoutePoint point) {
 			point = null;
 			lock (botRouteLock) {
-				if (!botRoutes.TryGetValue(target, out var route) || route.Count < 2)
-					return false;
-
-				var points = route.ToArray();
-				var closestIndex = -1;
 				var closestDistance = 8f;
-				for (var i = 0; i < points.Length - 1; i++) {
-					var distance = Vector3.Distance(botPosition, points[i].Position);
-					if (distance < closestDistance) {
-						closestDistance = distance;
-						closestIndex = i;
+				foreach (var pair in botRoutes.OrderByDescending(pair => pair.Key == preferredTarget)) {
+					if (pair.Value.Count < 2)
+						continue;
+
+					var points = pair.Value.ToArray();
+					for (var i = 0; i < points.Length - 1; i++) {
+						var distance = Vector3.Distance(botPosition, points[i].Position);
+						if (distance < closestDistance) {
+							closestDistance = distance;
+							point = points[i + 1];
+						}
 					}
 				}
-				if (closestIndex < 0)
-					return false;
+				return point != null;
+			}
+		}
 
-				point = points[closestIndex + 1];
-				return true;
+		private void NotifyBotOfConfirmedHit(GamePeer bot, GamePeer attacker) {
+			lock (botBrains) {
+				if (botBrains.TryGetValue(bot, out var brain))
+					brain.OnConfirmedHit(attacker);
 			}
 		}
 
@@ -328,7 +332,13 @@ namespace NekoNexus.Realtime.Server.Game {
 			private readonly System.Random Rand;
 
 			private DateTime nextFireTime = DateTime.MinValue;
+			private DateTime nextRoamTime = DateTime.MinValue;
+			private DateTime roamUntil = DateTime.MinValue;
 			private byte previousMovementState;
+			private int visibleThreatCmid;
+			private Vector3 botPositionWhenSeen;
+			private Vector3 threatPositionWhenSeen;
+			private DateTime confirmedSightExpires;
 
 			public BotBrain(BaseGameRoom room, GamePeer bot, int seed) {
 				Room = room;
@@ -370,8 +380,11 @@ namespace NekoNexus.Realtime.Server.Game {
 				var target = AcquireTarget(actor);
 				if (target != null) {
 					Engage(actor, target);
-				} else {
-					// Stay on a known server-approved surface when no recent player route is available.
+				} else if (DateTime.UtcNow >= nextRoamTime) {
+					roamUntil = DateTime.UtcNow.AddMilliseconds(Rand.Next(900, 1801));
+					nextRoamTime = DateTime.UtcNow.AddMilliseconds(Rand.Next(2600, 5001));
+				} else if (DateTime.UtcNow < roamUntil && Room.TryGetBotRoutePoint(null, actor.Movement.Position, out var routePoint)) {
+					FollowRoutePoint(actor, routePoint);
 				}
 			}
 
@@ -427,9 +440,14 @@ namespace NekoNexus.Realtime.Server.Game {
 				var isMelee = weapon != null && weapon.ItemClass == UberstrikeItemClass.WeaponMelee;
 				var range = GetWeaponRange(weapon);
 				var desiredRange = isMelee ? range * 0.5f : range * 0.65f;
+				var now = DateTime.UtcNow;
 
-				if (distance > desiredRange + 0.5f && Room.TryGetBotRoutePoint(target, myPosition, out var routePoint)) {
-					FollowRoutePoint(actor, routePoint);
+				if (now >= nextRoamTime) {
+					roamUntil = now.AddMilliseconds(Rand.Next(900, 1801));
+					nextRoamTime = now.AddMilliseconds(Rand.Next(2600, 5001));
+				}
+				if ((distance > desiredRange + 0.5f || now < roamUntil) && Room.TryGetBotRoutePoint(target, myPosition, out var routePoint)) {
+					FollowRoutePoint(actor, routePoint, false);
 				}
 
 				if (weapon == null || DateTime.UtcNow < nextFireTime)
@@ -438,7 +456,7 @@ namespace NekoNexus.Realtime.Server.Game {
 				// Hard range cutoff per weapon archetype - a shotgun/splattergun bot can no longer
 				// "hit" from sniper distance just because a target wandered into the shared 32-unit
 				// search radius; each weapon only ever fires within its own effective range.
-				if (distance > range)
+				if (distance > Math.Min(range, 22f) || !HasRecentLineOfSightConfirmation(target))
 					return;
 
 				// Bots should fire in deliberate bursts and miss often enough to feel human.
@@ -456,13 +474,35 @@ namespace NekoNexus.Realtime.Server.Game {
 				Room.DirectHitDamage(Bot, target.Actor.Cmid, (byte)bodyPart, 1);
 			}
 
-			private void FollowRoutePoint(GameActor actor, BotRoutePoint point) {
+			public void OnConfirmedHit(GamePeer attacker) {
+				if (attacker == null || attacker.IsBot || attacker.Actor == null || Bot.Actor == null)
+					return;
+
+				visibleThreatCmid = attacker.Actor.Cmid;
+				botPositionWhenSeen = Bot.Actor.Movement.Position;
+				threatPositionWhenSeen = attacker.Actor.Movement.Position;
+				confirmedSightExpires = DateTime.UtcNow.AddMilliseconds(600);
+			}
+
+			private bool HasRecentLineOfSightConfirmation(GamePeer target) {
+				if (target == null || target.Actor == null || visibleThreatCmid != target.Actor.Cmid || DateTime.UtcNow > confirmedSightExpires)
+					return false;
+
+				// A real client reports DirectHitDamage only after its local weapon ray hit the bot.
+				// In static map geometry that confirms reciprocal visibility; expire quickly and
+				// require both actors to remain near the confirmed positions to avoid wall shots.
+				return Vector3.Distance(Bot.Actor.Movement.Position, botPositionWhenSeen) <= 2f &&
+					Vector3.Distance(target.Actor.Movement.Position, threatPositionWhenSeen) <= 2f;
+			}
+
+			private void FollowRoutePoint(GameActor actor, BotRoutePoint point, bool faceMovement = true) {
 				var current = (Vector3)actor.Movement.Position;
 				var next = Vector3.MoveTowards(current, point.Position, 7.6f / BaseGameRoom.TICK_TRATE);
 
 				var direction = next - current;
 				if (direction.sqrMagnitude > 0.0001f) {
-					FaceDirection(actor, direction);
+					if (faceMovement)
+						FaceDirection(actor, direction);
 					actor.Movement.Velocity = (next - current) * BaseGameRoom.TICK_TRATE;
 					actor.Movement.KeyState = point.KeyState;
 				}
@@ -479,12 +519,20 @@ namespace NekoNexus.Realtime.Server.Game {
 			}
 
 			private void FaceDirection(GameActor actor, Vector3 direction) {
+				if (direction.sqrMagnitude < 0.0001f)
+					return;
+
 				var back = new Vector3(0, 0, -1);
 				var angle = Vector3.Angle(direction, back);
 				if (direction.x < 0)
 					angle = 360 - angle;
 
 				actor.Movement.HorizontalRotation = Conversion.Angle2Byte(angle);
+				var horizontal = new Vector3(direction.x, 0, direction.z);
+				var pitch = Vector3.Angle(horizontal, direction);
+				if (direction.y < 0)
+					pitch = 360 - pitch;
+				actor.Movement.VerticalRotation = Conversion.Angle2Byte(pitch);
 				actor.UpdatePosition = true;
 			}
 		}

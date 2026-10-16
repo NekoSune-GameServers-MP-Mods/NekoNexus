@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.7.18 — Match clock and bot behavior fixes
+
+### Matches
+- Normalize match timestamps to the client's 31-bit Photon clock and use a UTC server deadline,
+  so signed tick-count wrap cannot freeze the countdown or prevent the round from ending.
+- Unsubscribe the match-end handler when a round exits to prevent duplicate transitions in later
+  rounds.
+
+### Realtime bots
+- Capture spawn positions and roam along nearby, observed player routes instead of waiting only
+  when an enemy is outside the weapon's preferred range.
+- Track the target with both horizontal and vertical aim. Bot shots and damage require a recent
+  real-client hit confirmation on that bot, are limited to close range, and expire if either
+  player moves; this uses a client-validated sight line to avoid wall shots.
+
 ## 4.7.17 — Human-like bot movement and firing
 
 ### Realtime bots
