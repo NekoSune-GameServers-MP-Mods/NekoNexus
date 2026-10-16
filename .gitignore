@@ -176,6 +176,7 @@ dist
 
 # NekoNexus
 .vscode/
+__pycache__/
 .old/
 build/
 *.old/

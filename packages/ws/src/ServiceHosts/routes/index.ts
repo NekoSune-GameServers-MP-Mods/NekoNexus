@@ -62,7 +62,10 @@ router.use(
     const inputBytes = [...Buffer.from(bodyData, 'base64')];
 
     try {
-      const bytes = await service[method](inputBytes, []);
+      // Older clients request their public IP through GetMyIP without including a
+      // payload. Pass the actual socket peer address as an optional third argument;
+      // the other service methods continue to receive their existing two arguments.
+      const bytes = await service[method](inputBytes, [], req.socket.remoteAddress ?? '');
 
       res.setHeader('Content-Type', 'text/xml; charset=utf-8');
       res.setHeader('Server', 'Microsoft-HTTPAPI/2.0');

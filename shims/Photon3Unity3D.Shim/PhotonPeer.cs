@@ -17,6 +17,7 @@ namespace ExitGames.Client.Photon {
 		private int _serverTimeOffsetMs;        // localTick + offset ≈ server time
 		private int _timeSyncSentTick;          // local TickCount when the last time-sync went out
 		private bool _timeSyncPending;
+		private readonly NetworkSimulationSet _networkSimulationSettings = new NetworkSimulationSet();
 
 		// Reserved transport-only operation code for clock sync. The game never sends this (its real
 		// operation codes are small enum values), so it can't collide; the request/response are
@@ -45,10 +46,23 @@ namespace ExitGames.Client.Photon {
 			};
 		}
 
+		// The Android 4.3.10 realtime SDK constructs PhotonPeer with either the
+		// listener-only or legacy useTcp overload. Its multiplayer path is UDP.
+		public PhotonPeer(IPhotonPeerListener listener) : this(listener, ConnectionProtocol.Udp) { }
+		public PhotonPeer(IPhotonPeerListener listener, bool useTcp)
+			: this(listener, useTcp ? ConnectionProtocol.Tcp : ConnectionProtocol.Udp) { }
+
 		public PeerStateValue PeerState => _state;
 		public int RoundTripTime => _server?.Ping * 2 ?? 0;
+		public int RoundTripTimeVariance => 0;
 		public long BytesIn => _net.Statistics.BytesReceived;
 		public long BytesOut => _net.Statistics.BytesSent;
+		public int TimePingInterval { get; set; }
+		public int SentCountAllowance { get; set; }
+		public int CommandBufferSize { get; set; }
+		public int QueuedIncomingCommands => 0;
+		public int QueuedOutgoingCommands => 0;
+		public NetworkSimulationSet NetworkSimulationSettings => _networkSimulationSettings;
 
 		// Server clock estimate used by the game for match timing. The offset is computed from a
 		// round-trip time-sync (see SendTimeSync) so this reproduces the SERVER's Environment.TickCount
@@ -83,6 +97,8 @@ namespace ExitGames.Client.Photon {
 			_state = PeerStateValue.Disconnected;
 			_net.Stop();
 		}
+
+		public void StopThread() => _net.Stop();
 
 		// Pumps the transport; UberStrike calls this each frame.
 		public void Service() => _net.PollEvents();

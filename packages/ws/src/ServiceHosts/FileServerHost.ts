@@ -76,6 +76,17 @@ export default class FileServerHost {
       });
     }
 
+    // The Android 4.3.10 client downloads its item bundle by the fixed
+    // /UberStrike/Items/4.3.10/<hash>-Android.unity3d URL. The binary is user-supplied
+    // from their own APK, so keep it in ignored persistent server-data instead of Git.
+    const androidContentRoot = process.env.NEKONEXUS_ANDROID_CONTENT_DIR?.trim();
+    if (androidContentRoot) {
+      this.expressApp.use(
+        '/UberStrike/Items/4.3.10/',
+        express.static(path.join(path.resolve(androidContentRoot), 'UberStrike/Items/4.3.10')),
+      );
+    }
+
     this.expressApp.use('/', express.static(path.join(process.cwd(), 'wwwroot')));
     this.expressApp.use(
       '/UberStrike/Images/MapIcons/',

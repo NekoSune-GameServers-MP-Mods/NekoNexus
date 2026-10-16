@@ -19,7 +19,9 @@ import { ApiVersion } from '@/utils/enums';
 import { withServerRegionFlag } from '../../serverRegion';
 import { Map, MapSettings, PhotonServer, UserAccount } from '@festivaldev/nekonexus-models';
 import { BuildType, ChannelType, PhotonUsageType } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
+import { Op } from 'sequelize';
 import {
+  BooleanProxy,
   EnumProxy,
   Int32Proxy,
   ListProxy,
@@ -30,6 +32,7 @@ import {
   AuthenticateApplicationViewProxy,
   BugViewProxy,
   MapViewProxy,
+  PhotonViewProxy,
 } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization/Legacy';
 import { DefinitionType, LocaleType, TutorialStepType } from '@festivaldev/uberstrike-js/UberStrike/Core/Types';
 import { AuthenticateApplicationView } from '@festivaldev/uberstrike-js/UberStrike/DataCenter/Common/Entities';
@@ -45,7 +48,11 @@ export default class ApplicationWebService extends BaseWebService {
   // protected static get ServiceInterface(): string { return 'IApplicationWebServiceContract';
 
   static supportedClientVersions: string[] = ['4.3.10'];
-  static supportedClientChannels: ChannelType[] = [ChannelType.WindowsStandalone, ChannelType.OSXStandalone];
+  static supportedClientChannels: ChannelType[] = [
+    ChannelType.WindowsStandalone,
+    ChannelType.OSXStandalone,
+    ChannelType.Android,
+  ];
 
   static async GetPhotonServers(data: number[], outputStream: number[]): Promise<number[] | null> {
     const isEncrypted = this.isEncrypted(data);
@@ -58,10 +65,18 @@ export default class ApplicationWebService extends BaseWebService {
 
       this.debugEndpoint('GetPhotonServers', applicationView);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      const servers = await PhotonServer.findAll({
+        where: {
+          UsageType: PhotonUsageType.All,
+          Enabled: { [Op.ne]: false },
+        },
+        raw: true,
+      });
+
+      ListProxy.Serialize(outputStream, servers, PhotonViewProxy.Serialize);
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('GetPhotonServers', e);
     }
@@ -69,19 +84,13 @@ export default class ApplicationWebService extends BaseWebService {
     return null;
   }
 
-  static async GetMyIP(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
+  static async GetMyIP(_data: number[], outputStream: number[], remoteAddress = ''): Promise<number[] | null> {
     try {
-      this.debugEndpoint('GetMyIP');
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      // Node reports IPv4 peers as IPv4-mapped IPv6 addresses on dual-stack listeners.
+      const clientAddress = remoteAddress.replace(/^::ffff:/i, '');
+      this.debugEndpoint('GetMyIP', clientAddress);
+      StringProxy.Serialize(outputStream, clientAddress);
+      return outputStream;
     } catch (e) {
       this.handleEndpointError('GetMyIP', e);
     }
@@ -188,10 +197,9 @@ export default class ApplicationWebService extends BaseWebService {
 
       this.debugEndpoint('RecordExceptionUnencrypted', buildType, channelType, buildNumber, errorType, errorMessage);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('RecordExceptionUnencrypted', e);
     }
@@ -240,10 +248,10 @@ export default class ApplicationWebService extends BaseWebService {
 
       this.debugEndpoint('ReportBug', bugView);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      BooleanProxy.Serialize(outputStream, true);
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('ReportBug', e);
     }
@@ -395,10 +403,14 @@ export default class ApplicationWebService extends BaseWebService {
 
       this.debugEndpoint('GetPhotonServerName', applicationVersion, ipAddress, port);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      const server = await PhotonServer.findOne({
+        where: { IP: ipAddress, Port: port, Enabled: { [Op.ne]: false } },
+        raw: true,
+      });
+      StringProxy.Serialize(outputStream, server?.Name ?? `${ipAddress}:${port}`);
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('GetPhotonServerName', e);
     }
@@ -415,10 +427,10 @@ export default class ApplicationWebService extends BaseWebService {
     try {
       this.debugEndpoint('IsAlive');
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      StringProxy.Serialize(outputStream, 'OK');
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('IsAlive', e);
     }

@@ -9,7 +9,7 @@ using LiteNetLib.Utils;
 using NekoNexus.Transport;
 
 namespace ExitGames.Client.Photon {
-	public enum ConnectionProtocol : byte { Udp = 0, Tcp = 1 }
+	public enum ConnectionProtocol : byte { Udp = 0, Tcp = 1, Http = 2 }
 
 	// Values MUST match the original Photon3Unity3D enum exactly: the game's compiled code
 	// embeds these numeric constants in its switch/compare logic.
@@ -85,6 +85,28 @@ namespace ExitGames.Client.Photon {
 		}
 
 		public override string ToString() => "OperationResponse " + OperationCode + " (return " + ReturnCode + ")";
+	}
+
+	// The 4.3.10 Android realtime SDK retains Photon request objects for diagnostics,
+	// even though the NekoNexus transport sends the compact operation fields directly.
+	public class OperationRequest {
+		public byte OperationCode;
+		public Dictionary<byte, object> Parameters = new Dictionary<byte, object>();
+	}
+
+	// Compatibility surface used by the legacy SDK's network settings panel. Simulation
+	// is intentionally disabled in the LiteNetLib transport, but the settings object must
+	// exist so the old assembly can load and read/write its properties.
+	public class NetworkSimulationSet {
+		public bool IsSimulationEnabled { get; set; }
+		public int OutgoingLag { get; set; }
+		public int OutgoingJitter { get; set; }
+		public int OutgoingLossPercentage { get; set; }
+		public int IncomingLag { get; set; }
+		public int IncomingJitter { get; set; }
+		public int IncomingLossPercentage { get; set; }
+		public int LostPackagesOut { get; set; }
+		public int LostPackagesIn { get; set; }
 	}
 
 	public interface IPhotonPeerListener {

@@ -72,11 +72,15 @@ services:
       # Shared secret for the admin -> ws internal realtime-notify endpoint (System-mail
       # broadcasts refresh online inboxes instantly). MUST match the admin service's value below.
       INTERNAL_API_KEY: "change-me-nekonexus-internal"
+      # Optional: Android 4.3.10 item bundle copied from a user's own APK.
+      NEKONEXUS_ANDROID_CONTENT_DIR: /data/android-content
     volumes:
       - ./docker/config/NekoNexus.Settings.WebServices.yml:/app/packages/ws/NekoNexus.Settings.WebServices.yml:ro
       # Client auto-updates: publish with misc/publish-update.ps1 (writes ./server-data/updates);
       # the file server serves them at /updates/v2/<channel>/. No image rebuild/restart needed.
       - ./server-data/updates:/app/packages/ws/wwwroot/updates:ro
+      # User-provided Android item bundle; keep the 25 MB game asset out of the repository.
+      - ./server-data/android-content:/data/android-content:ro
 
   realtime-comm:
     image: ghcr.io/nekosune-gameservers-mp-mods/nekonexus-realtime:latest
