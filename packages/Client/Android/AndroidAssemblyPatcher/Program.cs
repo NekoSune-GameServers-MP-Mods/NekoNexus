@@ -89,9 +89,9 @@ foreach (var panelName in panels)
     InjectScaleCalls(onGui, uiScale.Begin, uiScale.End);
 }
 
-var completeAccountPanel = AllTypes(assembly.MainModule.Types).Single(type => type.Name == "CompleteAccountPanelGUI");
-var completeAccountOnGui = completeAccountPanel.Methods.Single(method => method.Name == "OnGUI" && method.HasBody);
-ReplaceNameTextField(completeAccountPanel, completeAccountOnGui, uiScale.EditName);
+// Keep Unity's native IMGUI text field so Android can route taps and open the
+// platform keyboard through its normal input path. The custom GUI.Button shim
+// was intermittently swallowing touch input on BlueStacks.
 var loginPanel = AllTypes(assembly.MainModule.Types).Single(type => type.Name == "LoginPanelGUI");
 var login = loginPanel.Methods.Single(method => method.Name == "Login" && method.HasBody && method.Parameters.Count == 2);
 PersistRememberedLogin(assembly.MainModule, unityEngine.MainModule, login);
@@ -104,7 +104,7 @@ Console.WriteLine("Bypassed the Tegra-only startup check and enlarged Android lo
 Console.WriteLine("Persisted Remember Me credentials immediately after writing Android login preferences.");
 return 0;
 
-static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName) CreateAndroidLoginScale(ModuleDefinition module, ModuleDefinition unity)
+static (MethodDefinition Begin, MethodDefinition End) CreateAndroidLoginScale(ModuleDefinition module, ModuleDefinition unity)
 {
     TypeDefinition FindType(string fullName) => unity.GetType(fullName)
         ?? throw new InvalidOperationException($"UnityEngine type {fullName} was not found.");
@@ -123,11 +123,6 @@ static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName)
         module.TypeSystem.Object);
     var previousMatrix = new FieldDefinition("PreviousMatrix", FieldAttributes.Private | FieldAttributes.Static, matrixType);
     helper.Fields.Add(previousMatrix);
-    var keyboardType = module.ImportReference(FindType("UnityEngine.TouchScreenKeyboard"));
-    var nameKeyboard = new FieldDefinition("NameKeyboard", FieldAttributes.Private | FieldAttributes.Static, keyboardType);
-    helper.Fields.Add(nameKeyboard);
-    var nameKeyboardJustOpened = new FieldDefinition("NameKeyboardJustOpened", FieldAttributes.Private | FieldAttributes.Static, module.TypeSystem.Boolean);
-    helper.Fields.Add(nameKeyboardJustOpened);
     module.Types.Add(helper);
 
     var guiGetMatrix = FindMethod("UnityEngine.GUI", "get_matrix", 0);
@@ -213,105 +208,7 @@ static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName)
     end.Body.Instructions.Add(Instruction.Create(OpCodes.Call, guiSetMatrix));
     end.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
 
-    var keyboardOpen = module.ImportReference(FindType("UnityEngine.TouchScreenKeyboard").Methods.Single(method => method.Name == "Open"
-        && method.IsStatic && method.Parameters.Count == 6 && method.Parameters[0].ParameterType.FullName == "System.String"));
-    MethodReference KeyboardGetter(string name) => module.ImportReference(FindType("UnityEngine.TouchScreenKeyboard").Methods.Single(method => method.Name == "get_" + name && method.Parameters.Count == 0));
-    var keyboardText = KeyboardGetter("text");
-    var keyboardActive = KeyboardGetter("active");
-    var keyboardDone = KeyboardGetter("done");
-    var keyboardCanceled = KeyboardGetter("wasCanceled");
-    var hideKeyboardInput = module.ImportReference(FindType("UnityEngine.TouchScreenKeyboard").Methods.Single(method => method.Name == "set_hideInput"
-        && method.IsStatic && method.Parameters.Count == 1 && method.Parameters[0].ParameterType.FullName == "System.Boolean"));
-    var nameFieldButton = module.ImportReference(FindType("UnityEngine.GUI").Methods.Single(method => method.Name == "Button"
-        && method.ReturnType.FullName == "System.Boolean" && method.Parameters.Count == 3
-        && method.Parameters[0].ParameterType.FullName == "UnityEngine.Rect"
-        && method.Parameters[1].ParameterType.FullName == "System.String"
-        && method.Parameters[2].ParameterType.FullName == "UnityEngine.GUIStyle"));
-    var editName = new MethodDefinition("EditName", MethodAttributes.Public | MethodAttributes.Static, module.TypeSystem.String);
-    editName.Parameters.Add(new ParameterDefinition("position", ParameterAttributes.None, module.ImportReference(FindType("UnityEngine.Rect"))));
-    editName.Parameters.Add(new ParameterDefinition("value", ParameterAttributes.None, module.TypeSystem.String));
-    editName.Parameters.Add(new ParameterDefinition("maxLength", ParameterAttributes.None, module.TypeSystem.Int32));
-    editName.Parameters.Add(new ParameterDefinition("style", ParameterAttributes.None, module.ImportReference(FindType("UnityEngine.GUIStyle"))));
-    helper.Methods.Add(editName);
-    var nameIl = editName.Body.GetILProcessor();
-    var result = new VariableDefinition(module.TypeSystem.String);
-    editName.Body.Variables.Add(result);
-    editName.Body.InitLocals = true;
-    var noKeyboard = Instruction.Create(OpCodes.Ldsfld, nameKeyboardJustOpened);
-    var keyboardPoll = Instruction.Create(OpCodes.Ldsfld, nameKeyboard);
-    var keyboardActiveLabel = Instruction.Create(OpCodes.Ldsfld, nameKeyboard);
-    var clearKeyboard = Instruction.Create(OpCodes.Ldnull);
-    var limitLength = Instruction.Create(OpCodes.Ldloc, result);
-    var returnValue = Instruction.Create(OpCodes.Ldloc, result);
-
-    nameIl.Append(nameIl.Create(OpCodes.Ldarg_1));
-    nameIl.Append(nameIl.Create(OpCodes.Stloc, result));
-    nameIl.Append(nameIl.Create(OpCodes.Ldarg_0));
-    nameIl.Append(nameIl.Create(OpCodes.Ldarg_1));
-    nameIl.Append(nameIl.Create(OpCodes.Ldarg_3));
-    nameIl.Append(nameIl.Create(OpCodes.Call, nameFieldButton));
-    nameIl.Append(nameIl.Create(OpCodes.Brfalse, noKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0));
-    nameIl.Append(nameIl.Create(OpCodes.Call, hideKeyboardInput));
-    nameIl.Append(nameIl.Create(OpCodes.Ldarg_1));
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0)); // TouchScreenKeyboardType.Default
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0)); // autocorrection
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0)); // multiline
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0)); // secure
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0)); // alert
-    nameIl.Append(nameIl.Create(OpCodes.Call, keyboardOpen));
-    nameIl.Append(nameIl.Create(OpCodes.Stsfld, nameKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_1));
-    nameIl.Append(nameIl.Create(OpCodes.Stsfld, nameKeyboardJustOpened));
-    nameIl.Append(nameIl.Create(OpCodes.Br, limitLength));
-
-    nameIl.Append(noKeyboard);
-    nameIl.Append(nameIl.Create(OpCodes.Brfalse, keyboardPoll));
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0));
-    nameIl.Append(nameIl.Create(OpCodes.Stsfld, nameKeyboardJustOpened));
-    nameIl.Append(nameIl.Create(OpCodes.Br, limitLength));
-    nameIl.Append(keyboardPoll);
-    nameIl.Append(nameIl.Create(OpCodes.Ldsfld, nameKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Callvirt, keyboardDone));
-    nameIl.Append(nameIl.Create(OpCodes.Brfalse, keyboardActiveLabel));
-    nameIl.Append(nameIl.Create(OpCodes.Ldsfld, nameKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Callvirt, keyboardCanceled));
-    nameIl.Append(nameIl.Create(OpCodes.Brtrue, clearKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Ldsfld, nameKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Callvirt, keyboardText));
-    nameIl.Append(nameIl.Create(OpCodes.Stloc, result));
-    nameIl.Append(nameIl.Create(OpCodes.Br, clearKeyboard));
-
-    nameIl.Append(keyboardActiveLabel);
-    nameIl.Append(nameIl.Create(OpCodes.Callvirt, keyboardActive));
-    nameIl.Append(nameIl.Create(OpCodes.Brfalse, clearKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Ldsfld, nameKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Callvirt, keyboardText));
-    nameIl.Append(nameIl.Create(OpCodes.Stloc, result));
-    nameIl.Append(nameIl.Create(OpCodes.Br, limitLength));
-
-    nameIl.Append(clearKeyboard);
-    nameIl.Append(nameIl.Create(OpCodes.Stsfld, nameKeyboard));
-    nameIl.Append(nameIl.Create(OpCodes.Br, limitLength));
-
-    var stringLength = module.ImportReference(module.TypeSystem.String.Resolve().Methods.Single(method => method.Name == "get_Length" && method.Parameters.Count == 0));
-    var substring = module.ImportReference(module.TypeSystem.String.Resolve().Methods.Single(method => method.Name == "Substring" && method.Parameters.Count == 2
-        && method.Parameters.All(parameter => parameter.ParameterType.FullName == "System.Int32")));
-    nameIl.Append(limitLength);
-    nameIl.Append(nameIl.Create(OpCodes.Brfalse, returnValue));
-    nameIl.Append(nameIl.Create(OpCodes.Ldloc, result));
-    nameIl.Append(nameIl.Create(OpCodes.Callvirt, stringLength));
-    nameIl.Append(nameIl.Create(OpCodes.Ldarg_2));
-    nameIl.Append(nameIl.Create(OpCodes.Ble, returnValue));
-    nameIl.Append(nameIl.Create(OpCodes.Ldloc, result));
-    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0));
-    nameIl.Append(nameIl.Create(OpCodes.Ldarg_2));
-    nameIl.Append(nameIl.Create(OpCodes.Callvirt, substring));
-    nameIl.Append(nameIl.Create(OpCodes.Stloc, result));
-
-    nameIl.Append(returnValue);
-    nameIl.Append(nameIl.Create(OpCodes.Ret));
-    return (begin, end, editName);
+    return (begin, end);
 }
 
 static void InjectScaleCalls(MethodDefinition method, MethodDefinition begin, MethodDefinition end)
@@ -334,24 +231,6 @@ static void InjectScaleCalls(MethodDefinition method, MethodDefinition begin, Me
             }
         }
     }
-}
-
-static void ReplaceNameTextField(TypeDefinition panel, MethodDefinition onGui, MethodDefinition editName)
-{
-    var textField = onGui.Body.Instructions.SingleOrDefault(instruction =>
-        instruction.OpCode == OpCodes.Call && instruction.Operand is MethodReference method
-        && method.Name == "TextField" && method.DeclaringType.Name == "GUI"
-        && method.Parameters.Count == 4
-        && method.Parameters[0].ParameterType.FullName == "UnityEngine.Rect"
-        && method.Parameters[1].ParameterType.FullName == "System.String"
-        && method.Parameters[2].ParameterType.FullName == "System.Int32"
-        && method.Parameters[3].ParameterType.FullName == "UnityEngine.GUIStyle");
-    if (textField is null)
-        throw new InvalidOperationException("Could not locate the Android character name text field.");
-
-    // Replace, rather than overlay, the IMGUI TextField. Login uses this same
-    // textField-style GUI.Button pattern to receive Android touches and launch IME.
-    textField.Operand = panel.Module.ImportReference(editName);
 }
 
 static void PersistRememberedLogin(ModuleDefinition module, ModuleDefinition unity, MethodDefinition login)
