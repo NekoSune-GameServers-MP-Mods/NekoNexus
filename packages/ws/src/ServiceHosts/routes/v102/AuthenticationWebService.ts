@@ -353,8 +353,8 @@ export default class AuthenticationWebService extends BaseWebService {
 
               const memberWallet = await MemberWallet.create({
                 Cmid: publicProfile.Cmid,
-                // Points: 10000,
-                // Credits: 1000,
+                Points: 10000,
+                Credits: 1000,
                 PointsExpiration: new Date('9999-12-31T23:59:59.999Z'),
                 CreditsExpiration: new Date('9999-12-31T23:59:59.999Z'),
               });

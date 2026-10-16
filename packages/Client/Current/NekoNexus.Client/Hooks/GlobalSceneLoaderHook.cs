@@ -211,9 +211,23 @@ namespace NekoNexus.Client {
 			HandleApplicationAuthenticationError(NekoNexusLocalizedStrings.CheckConnection);
 		}
 
-		private static void RetryAuthentiateApplication() {
-			//GlobalSceneLoaderHook.ErrorMessage = string.Empty;
-			//UnityRuntime.StartRoutine(BeginAuthenticateApplication());
+		private static void RetryAuthenticateApplication() {
+			if (traverse == null || traverse.Instance == null) {
+				Debug.LogError("Cannot retry application authentication because the scene loader is unavailable.");
+				return;
+			}
+
+			ErrorMessage = string.Empty;
+			ApplicationDataManager.IsOnline = false;
+			traverse.Instance.StartCoroutine(RetryAuthenticateApplicationAfterDelay());
+		}
+
+		private static IEnumerator RetryAuthenticateApplicationAfterDelay() {
+			// Give a transient service restart or network interruption a moment to recover.
+			yield return new WaitForSeconds(2f);
+			if (traverse != null && traverse.Instance != null) {
+				traverse.Instance.StartCoroutine(Start());
+			}
 		}
 
 		private static void HandleApplicationAuthenticationError(string message) {
@@ -222,12 +236,21 @@ namespace NekoNexus.Client {
 				case ChannelType.Steam:
 				case ChannelType.WindowsStandalone:
 				case ChannelType.OSXStandalone:
-					PopupSystem.ShowError(LocalizedStrings.Error, message + Environment.NewLine + NekoNexusLocalizedStrings.WSConnectionFailed, PopupSystem.AlertType.OK, new Action(Application.Quit));
+					PopupSystem.Show(new NekoNexusPopupDialog(
+						LocalizedStrings.Error,
+						message + Environment.NewLine + NekoNexusLocalizedStrings.WSConnectionFailed + Environment.NewLine + Environment.NewLine + NekoNexusLocalizedStrings.RetryOrQuit,
+						PopupSystem.AlertType.OKCancel,
+						NekoNexusLocalizedStrings.Retry,
+						new Action(RetryAuthenticateApplication),
+						NekoNexusLocalizedStrings.Quit,
+						new Action(Application.Quit),
+						string.Empty,
+						null));
 					break;
 				case ChannelType.IPhone:
 				case ChannelType.IPad:
 				case ChannelType.Android:
-					PopupSystem.ShowError(LocalizedStrings.Error, message, PopupSystem.AlertType.OK, new Action(RetryAuthentiateApplication));
+					PopupSystem.ShowError(LocalizedStrings.Error, message, PopupSystem.AlertType.OK, new Action(RetryAuthenticateApplication));
 					break;
 				default:
 					if (channel != ChannelType.WebPortal && channel != ChannelType.WebFacebook) {

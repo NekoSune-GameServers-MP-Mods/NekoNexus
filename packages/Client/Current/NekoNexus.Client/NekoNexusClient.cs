@@ -61,7 +61,11 @@ namespace NekoNexus.Client {
 				if (!_isExceptionSent) {
 					_isExceptionSent = true;
 
-					NekoNexusWebServiceClient.RecordException(PlayerDataManager.Cmid, ApplicationDataManager.Channel, ApplicationDataManager.Version, logString, stackTrace, DebugLogMessages.Console.ToHTML(), () => { });
+					try {
+						NekoNexusWebServiceClient.RecordException(PlayerDataManager.Cmid, ApplicationDataManager.Channel, ApplicationDataManager.Version, logString, stackTrace, DebugLogMessages.Console.ToHTML(), () => { });
+					} catch (Exception exception) {
+						Log.Warn("Could not queue the client exception for telemetry: " + exception.Message);
+					}
 				}
 			}
 		}

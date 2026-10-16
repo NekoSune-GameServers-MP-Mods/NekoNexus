@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.7.15 — Data-service retry and signup wallet fixes
+
+### Client
+- A temporary failure reaching the data service now offers **Retry** or **Quit** instead of closing
+  the game after the error dialog. Failed or empty SOAP responses are handled safely, and telemetry
+  no longer retries recursively through an unavailable endpoint.
+
+### Accounts
+- New email accounts now receive 1,000 credits and 10,000 coins (Points) on first login, matching
+  the existing Steam signup grant.
+
 ## 4.7.14 — Updater moved to the new GitHub organization
 
 ### Client updates

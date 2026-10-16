@@ -30,6 +30,9 @@
 		public static string NekoNexusCaps = "PARADISE";
 		public static string PleaseUpdate = "Please Update.";
 		public static string PrivacyPolicy = "Privacy Policy";
+		public static string Quit = "Quit";
+		public static string Retry = "Retry";
+		public static string RetryOrQuit = "Check your internet connection or try again in a moment.";
 		public static string ResolutionSet = "Resolution has been set to {0:N0}x{1:N0}.\nDo you want to keep this setting?";
 		public static string Save = "Save";
 		public static string TelemetryPopupText = "We would like to collect UberStrike error logs and details about your hardware. This data is completely anonymous, and you can always choose to enable or disable data collection in the NekoNexus settings if you change your mind.";

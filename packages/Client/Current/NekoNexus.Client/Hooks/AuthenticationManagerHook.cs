@@ -217,9 +217,16 @@ namespace NekoNexus.Client {
 
 			Debug.Log("Login Error!");
 			PopupSystem.HideMessage(traverse.GetField<ProgressPopupDialog>("_progress"));
-			PopupSystem.ShowMessage(title, message, PopupSystem.AlertType.OK, delegate {
-				Application.Quit();
-			});
+			PopupSystem.Show(new NekoNexusPopupDialog(
+				title,
+				message + Environment.NewLine + Environment.NewLine + NekoNexusLocalizedStrings.RetryOrQuit,
+				PopupSystem.AlertType.OKCancel,
+				NekoNexusLocalizedStrings.Retry,
+				new Action(() => Singleton<AuthenticationManager>.Instance.LoginByChannel()),
+				NekoNexusLocalizedStrings.Quit,
+				new Action(Application.Quit),
+				string.Empty,
+				null));
 
 			return false;
 		}
