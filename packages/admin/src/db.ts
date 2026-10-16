@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import mysql from 'mysql2';
 import { Sequelize } from 'sequelize';
 import { type AdminConfig } from './config';
+import { runDatabaseMigrations } from './migrations';
 
 export let sequelize: Sequelize;
 
@@ -28,7 +29,7 @@ export async function initDatabase(cfg: AdminConfig) {
   // Plain sync creates the table on a fresh install but leaves existing admin data and indexes
   // untouched on subsequent starts.
   await models.AdminUser.sync();
-  await models.CreditPackage.sync({ alter: true });
+  await models.CreditPackage.sync();
 
   // Do not use alter-sync for PaymentOrders: ExternalId is unique, and Sequelize v6 can create
   // a new duplicate unique index each time alter-sync runs against MySQL/MariaDB. After enough
@@ -37,12 +38,16 @@ export async function initDatabase(cfg: AdminConfig) {
   // an existing table on every startup. Use an explicit migration for future schema changes.
   await models.PaymentOrder.sync();
 
-  await models.PlayerReport.sync({ alter: true }); // player-report inbox (owned by the admin app)
+  await models.PlayerReport.sync(); // player-report inbox (owned by the admin app)
   try {
-    await models.PhotonServer.sync({ alter: true });
+    await models.PhotonServer.sync();
   } catch {
     /* PhotonServers may be managed by the web service seed; ignore alter conflicts */
   }
+
+  // Apply versioned schema changes only after the tables needed by migrations exist.
+  // Pending migrations run once and are recorded in NekoNexusMigrations.
+  await runDatabaseMigrations(sequelize);
 
   await ensureDefaultAdmin();
   await ensureDefaultPackages();
