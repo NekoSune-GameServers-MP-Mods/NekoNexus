@@ -38,13 +38,15 @@ namespace NekoNexus.Realtime.Server.Game {
 		// Reuse movement that a real client has already proven valid on this map. The realtime
 		// server has no Unity collision or water geometry, so it cannot safely invent jumps,
 		// swim surfaces, or paths around walls on its own.
-		private void RecordBotRoutePoint(GamePeer peer) {
+		private void RecordBotRoutePoint(GamePeer peer, bool newLife = false) {
 			if (peer == null || peer.IsBot || peer.Actor == null || !peer.Actor.ActorInfo.IsAlive)
 				return;
 
 			var now = DateTime.UtcNow;
 			var position = (Vector3)peer.Actor.Movement.Position;
 			lock (botRouteLock) {
+				if (newLife)
+					botRoutes.Remove(peer);
 				if (!botRoutes.TryGetValue(peer, out var route)) {
 					route = new Queue<BotRoutePoint>();
 					botRoutes[peer] = route;
@@ -53,6 +55,15 @@ namespace NekoNexus.Realtime.Server.Game {
 				var last = route.Count == 0 ? null : route.Last();
 				if (last != null && Vector3.Distance(last.Position, position) < 0.65f && (now - last.Time).TotalMilliseconds < 300)
 					return;
+				if (last != null) {
+					var distance = Vector3.Distance(last.Position, position);
+					var elapsed = Math.Max(0.05, (now - last.Time).TotalSeconds);
+					if (distance > 18f || distance / elapsed > 25f)
+						return; // Don't train on a teleport or implausible movement packet.
+				}
+
+				BotMapTraining.ObserveMovement(MetaData.MapID, last?.Position, position,
+					peer.Actor.Movement.MovementState, peer.Actor.Movement.KeyState, peer.Actor.Movement.Velocity);
 
 				route.Enqueue(new BotRoutePoint {
 					Position = position,
@@ -69,6 +80,9 @@ namespace NekoNexus.Realtime.Server.Game {
 
 		private bool TryGetBotRoutePoint(GamePeer preferredTarget, Vector3 botPosition, out BotRoutePoint point) {
 			point = null;
+			if (preferredTarget == null && TryGetTrainedRoutePoint(null, botPosition, out point))
+				return true;
+
 			lock (botRouteLock) {
 				var closestDistance = 8f;
 				foreach (var pair in botRoutes.OrderByDescending(pair => pair.Key == preferredTarget)) {
@@ -84,8 +98,30 @@ namespace NekoNexus.Realtime.Server.Game {
 						}
 					}
 				}
-				return point != null;
+				if (point != null)
+					return true;
 			}
+			return TryGetTrainedRoutePoint(preferredTarget, botPosition, out point);
+		}
+
+		private bool TryGetTrainedRoutePoint(GamePeer preferredTarget, Vector3 botPosition, out BotRoutePoint point) {
+			point = null;
+			if (!BotMapTraining.TryGetNext(MetaData.MapID, botPosition,
+				preferredTarget?.Actor?.Cmid ?? 0, Players, out var position, out var movementState, out var keyState))
+				return false;
+
+			point = new BotRoutePoint {
+				Position = position,
+				MovementState = movementState,
+				KeyState = keyState,
+				Time = DateTime.UtcNow,
+			};
+			return true;
+		}
+
+		private void ClearBotRoute(GamePeer peer) {
+			lock (botRouteLock)
+				botRoutes.Remove(peer);
 		}
 
 		private void NotifyBotOfConfirmedHit(GamePeer bot, GamePeer attacker) {

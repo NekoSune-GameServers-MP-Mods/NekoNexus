@@ -248,6 +248,7 @@ namespace NekoNexus.Realtime.Server.Game {
 
 			System.Diagnostics.Debug.Assert(peer.Room != null, "GamePeer is leaving room, but is not in any room.");
 			System.Diagnostics.Debug.Assert(peer.Room == this, "GamePeer is leaving room, but is not leaving the correct room.");
+			ClearBotRoute(peer);
 			foreach (var otherPeer in Peers) {
 				otherPeer.GameEventSender.SendPlayerLeftGame(peer.Actor.Cmid);
 			}
@@ -372,6 +373,7 @@ namespace NekoNexus.Realtime.Server.Game {
 				return;
 
 			if (disposing) {
+				BotMapTraining.Flush(MetaData.MapID);
 				Scheduler.Unschedule(Loop);
 
 				foreach (var peer in Peers) {
@@ -499,7 +501,7 @@ namespace NekoNexus.Realtime.Server.Game {
 
 				player.Actor.Movement.Position = spawn.Position;
 				player.Actor.Movement.HorizontalRotation = Conversion.Angle2Byte(spawn.Rotation.y);
-				RecordBotRoutePoint(player);
+				RecordBotRoutePoint(player, true);
 
 				player.Actor.LastRespawnTime = DateTime.UtcNow;
 				player.Actor.NextRespawnTime = DateTime.MinValue;
@@ -556,6 +558,9 @@ namespace NekoNexus.Realtime.Server.Game {
 		}
 
 		protected virtual void OnPlayerKilled(PlayerKilledEventArgs args) {
+			var victim = Players.FirstOrDefault(p => p.Actor != null && p.Actor.Cmid == args.VictimCmid);
+			if (victim != null && !victim.IsBot)
+				BotMapTraining.ObserveDeath(MetaData.MapID, victim.Actor.Movement.Position);
 			PlayerKilled?.Invoke(this, args);
 		}
 
@@ -639,6 +644,8 @@ namespace NekoNexus.Realtime.Server.Game {
 		private void SpawnPositions(GamePeer peer, TeamID team, List<Vector3> positions, List<byte> rotations) {
 			if (!SpawnPointManager.IsLoaded(team)) {
 				SpawnPointManager.Load(team, positions, rotations);
+				foreach (var position in positions)
+					BotMapTraining.ObserveSpawn(MetaData.MapID, position, (int)team);
 			}
 		}
 

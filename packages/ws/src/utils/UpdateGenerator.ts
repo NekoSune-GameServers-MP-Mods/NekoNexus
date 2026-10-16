@@ -27,7 +27,7 @@ const VERSION = '2.1.2.1';
 // Product version, shown in the update prompt's `build` field (e.g. "4.7.6-260626-2235"). Bump this
 // in lockstep with the installer AppVer / git tag each release. NOT the protocol version (the client
 // still authenticates as "4.7.1" - that must never change); this is purely the human-facing build.
-const PRODUCT_VERSION = '4.7.19';
+const PRODUCT_VERSION = '4.7.20';
 
 const CHANNELS = ['stable', 'beta'];
 const PLATFORMS: string[] = ['win', 'darwin', 'universal'];

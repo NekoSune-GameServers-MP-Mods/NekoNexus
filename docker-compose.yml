@@ -102,9 +102,13 @@ services:
     restart: unless-stopped
     depends_on:
       - webservices
+    environment:
+      NEKONEXUS_BOT_MAP_DATA: /data/bot-maps
     command: ["Game", "--master-host", "webservices"]
     ports:
       - "5155:5155/udp"
+    volumes:
+      - ./server-data/bot-maps:/data/bot-maps
 
   # Admin dashboard (server/player/store management). Open http://<host>:8088 — default
   # login admin/admin; change it on the Account page on first run.

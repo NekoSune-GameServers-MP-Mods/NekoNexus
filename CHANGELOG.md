@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.7.20 — Persistent bot map training
+
+### Realtime bots
+- Automatically build per-map route memory from human movement and team spawn points, record
+  deaths and observed jump/water movement, and use learned low-risk routes for patrol and pursuit.
+- Persist bounded map knowledge across server restarts; Docker Compose stores it under
+  `server-data/bot-maps`.
+
 ## 4.7.19 — Bot patrol and match completion fixes
 
 ### Matches
