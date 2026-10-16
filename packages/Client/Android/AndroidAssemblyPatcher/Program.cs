@@ -74,6 +74,13 @@ if (unityEngineReference is null)
 }
 
 var unityEngine = resolver.Resolve(unityEngineReference);
+var applicationType = unityEngine.MainModule.GetType("UnityEngine.Application")
+    ?? throw new InvalidOperationException("Could not find UnityEngine.Application.");
+var targetFrameRateSetter = assembly.MainModule.ImportReference(applicationType.Methods.Single(method => method.Name == "set_targetFrameRate"
+    && method.IsStatic && method.Parameters.Count == 1 && method.Parameters[0].ParameterType.FullName == "System.Int32"));
+var startupIl = moveNext.Body.GetILProcessor();
+startupIl.InsertBefore(moveNext.Body.Instructions[0], startupIl.Create(OpCodes.Ldc_I4, 30));
+startupIl.InsertBefore(moveNext.Body.Instructions[1], startupIl.Create(OpCodes.Call, targetFrameRateSetter));
 var uiScale = CreateAndroidLoginScale(assembly.MainModule, unityEngine.MainModule);
 var panels = new[] { "LoginPanelGUI", "SignupPanelGUI", "CompleteAccountPanelGUI" };
 foreach (var panelName in panels)
@@ -102,6 +109,7 @@ assembly.Dispose();
 File.Move(temporaryPath, assemblyPath, overwrite: true);
 Console.WriteLine("Bypassed the Tegra-only startup check and enlarged Android login, signup, and name panels.");
 Console.WriteLine("Persisted Remember Me credentials immediately after writing Android login preferences.");
+Console.WriteLine("Capped the legacy Android client at 30 FPS to keep emulator input responsive.");
 return 0;
 
 static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName) CreateAndroidLoginScale(ModuleDefinition module, ModuleDefinition unity)
@@ -126,6 +134,8 @@ static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName)
     var keyboardType = module.ImportReference(FindType("UnityEngine.TouchScreenKeyboard"));
     var nameKeyboard = new FieldDefinition("NameKeyboard", FieldAttributes.Private | FieldAttributes.Static, keyboardType);
     helper.Fields.Add(nameKeyboard);
+    var nameKeyboardJustOpened = new FieldDefinition("NameKeyboardJustOpened", FieldAttributes.Private | FieldAttributes.Static, module.TypeSystem.Boolean);
+    helper.Fields.Add(nameKeyboardJustOpened);
     module.Types.Add(helper);
 
     var guiGetMatrix = FindMethod("UnityEngine.GUI", "get_matrix", 0);
@@ -235,7 +245,8 @@ static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName)
     var result = new VariableDefinition(module.TypeSystem.String);
     editName.Body.Variables.Add(result);
     editName.Body.InitLocals = true;
-    var noKeyboard = Instruction.Create(OpCodes.Ldsfld, nameKeyboard);
+    var noKeyboard = Instruction.Create(OpCodes.Ldsfld, nameKeyboardJustOpened);
+    var keyboardPoll = Instruction.Create(OpCodes.Ldsfld, nameKeyboard);
     var keyboardActiveLabel = Instruction.Create(OpCodes.Ldsfld, nameKeyboard);
     var clearKeyboard = Instruction.Create(OpCodes.Ldnull);
     var limitLength = Instruction.Create(OpCodes.Ldloc, result);
@@ -258,9 +269,16 @@ static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName)
     nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0)); // alert
     nameIl.Append(nameIl.Create(OpCodes.Call, keyboardOpen));
     nameIl.Append(nameIl.Create(OpCodes.Stsfld, nameKeyboard));
+    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_1));
+    nameIl.Append(nameIl.Create(OpCodes.Stsfld, nameKeyboardJustOpened));
+    nameIl.Append(nameIl.Create(OpCodes.Br, limitLength));
 
     nameIl.Append(noKeyboard);
-    nameIl.Append(nameIl.Create(OpCodes.Brfalse, limitLength));
+    nameIl.Append(nameIl.Create(OpCodes.Brfalse, keyboardPoll));
+    nameIl.Append(nameIl.Create(OpCodes.Ldc_I4_0));
+    nameIl.Append(nameIl.Create(OpCodes.Stsfld, nameKeyboardJustOpened));
+    nameIl.Append(nameIl.Create(OpCodes.Br, limitLength));
+    nameIl.Append(keyboardPoll);
     nameIl.Append(nameIl.Create(OpCodes.Ldsfld, nameKeyboard));
     nameIl.Append(nameIl.Create(OpCodes.Callvirt, keyboardDone));
     nameIl.Append(nameIl.Create(OpCodes.Brfalse, keyboardActiveLabel));
@@ -372,3 +390,4 @@ static IEnumerable<TypeDefinition> AllTypes(IEnumerable<TypeDefinition> types)
             yield return nested;
     }
 }
+

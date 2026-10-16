@@ -16,8 +16,8 @@
  */
 
 import { ApiVersion } from '@/utils/enums';
-import { Clan, ClanMember, GroupInvitation, UserAccount } from '@festivaldev/nekonexus-models';
-import { GroupInvitationView } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
+import { Clan, ClanMember, GameSession, GroupInvitation, UserAccount } from '@festivaldev/nekonexus-models';
+import { ClanView, GroupInvitationView } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
 import {
   BooleanProxy,
   Int32Proxy,
@@ -27,6 +27,7 @@ import {
 import {
   GroupCreationViewProxy,
   GroupInvitationViewProxy,
+  ClanViewProxy,
   MemberPositionUpdateViewProxy,
 } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization/Legacy';
 import BaseWebService from '../BaseWebService';
@@ -294,37 +295,58 @@ export default class ClanWebService extends BaseWebService {
       : data;
 
     try {
+      // The Unity Android client sends CMID + application ID as two Int32s.
       const cmid = Int32Proxy.Deserialize(bytes);
       const applicationId = Int32Proxy.Deserialize(bytes);
-
       this.debugEndpoint('GetMyClanId', cmid, applicationId);
 
-      const userAccount = await UserAccount.findOne({ where: { Cmid: cmid } });
+      const member = await ClanMember.findOne({ where: { Cmid: cmid } });
 
-      if (userAccount) {
-        const clans = await Clan.findAll({
-          include: [
-            {
-              model: ClanMember,
-              as: 'Members',
-            },
-          ],
-        });
-
-        for (const clan of clans) {
-          if (await clan.Members.find((_) => _.Cmid === userAccount.Cmid)) {
-            Int32Proxy.Serialize(outputStream, clan.GroupId);
-
-            break;
-          }
-        }
-      }
+      // The Unity callback always deserializes one Int32, even for players
+      // without a clan, so return 0 instead of an empty response body.
+      Int32Proxy.Serialize(outputStream, member?.GroupId ?? 0);
 
       return isEncrypted
         ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
         : outputStream;
     } catch (e) {
       this.handleEndpointError('GetMyClanId', e);
+    }
+
+    return null;
+  }
+
+  static async GetOwnClan(data: number[], outputStream: number[]): Promise<number[] | null> {
+    const isEncrypted = this.isEncrypted(data);
+    const bytes = isEncrypted
+      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
+      : data;
+
+    try {
+      const authToken = StringProxy.Deserialize(bytes);
+      const groupId = Int32Proxy.Deserialize(bytes);
+      this.debugEndpoint('GetOwnClan', groupId);
+
+      const session = await GameSession.findOne({ where: { SessionId: authToken } });
+      const member = session
+        ? await ClanMember.findOne({ where: { Cmid: session.Cmid, GroupId: groupId } })
+        : null;
+      const clan = member
+        ? await Clan.findOne({
+            where: { GroupId: groupId },
+            include: [{ model: ClanMember, as: 'Members', required: false }],
+          })
+        : null;
+
+      if (clan) {
+        ClanViewProxy.Serialize(outputStream, clan.get({ plain: true }) as ClanView);
+      }
+
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
+    } catch (error) {
+      this.handleEndpointError('GetOwnClan', error);
     }
 
     return null;
