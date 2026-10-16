@@ -60,7 +60,9 @@ namespace NekoNexus.Realtime.Server.Game {
 					KeyState = peer.Actor.Movement.KeyState,
 					Time = now,
 				});
-				while (route.Count > 96 || (route.Count > 1 && (now - route.Peek().Time).TotalSeconds > 12))
+				// Keep paths for the whole match. A short TTL made bots forget every safe route
+				// whenever players left their immediate area, leaving them idle at spawn.
+				while (route.Count > 2048 || (route.Count > 1 && (now - route.Peek().Time).TotalMinutes > 10))
 					route.Dequeue();
 			}
 		}
@@ -91,11 +93,6 @@ namespace NekoNexus.Realtime.Server.Game {
 				if (botBrains.TryGetValue(bot, out var brain))
 					brain.OnConfirmedHit(attacker);
 			}
-		}
-
-		private void ClearBotRoute(GamePeer peer) {
-			lock (botRouteLock)
-				botRoutes.Remove(peer);
 		}
 
 		public int BotCount { get { lock (peers) { return players.Count(p => p.IsBot); } } }
@@ -332,8 +329,7 @@ namespace NekoNexus.Realtime.Server.Game {
 			private readonly System.Random Rand;
 
 			private DateTime nextFireTime = DateTime.MinValue;
-			private DateTime nextRoamTime = DateTime.MinValue;
-			private DateTime roamUntil = DateTime.MinValue;
+			private DateTime nextWeaponChoice = DateTime.MinValue;
 			private byte previousMovementState;
 			private int visibleThreatCmid;
 			private Vector3 botPositionWhenSeen;
@@ -380,11 +376,12 @@ namespace NekoNexus.Realtime.Server.Game {
 				var target = AcquireTarget(actor);
 				if (target != null) {
 					Engage(actor, target);
-				} else if (DateTime.UtcNow >= nextRoamTime) {
-					roamUntil = DateTime.UtcNow.AddMilliseconds(Rand.Next(900, 1801));
-					nextRoamTime = DateTime.UtcNow.AddMilliseconds(Rand.Next(2600, 5001));
-				} else if (DateTime.UtcNow < roamUntil && Room.TryGetBotRoutePoint(null, actor.Movement.Position, out var routePoint)) {
+				} else if (Room.TryGetBotRoutePoint(null, actor.Movement.Position, out var routePoint)) {
+					// Patrol continuously along human-validated movement traces. Target acquisition
+					// still runs every tick, so a nearby enemy immediately interrupts the patrol.
 					FollowRoutePoint(actor, routePoint);
+				} else {
+					Room.IsInSniperMode(Bot, false);
 				}
 			}
 
@@ -436,27 +433,22 @@ namespace NekoNexus.Realtime.Server.Game {
 
 				FaceDirection(actor, toTarget);
 
+				ChooseWeapon(actor, distance);
 				var weapon = actor.CurrentWeapon;
 				var isMelee = weapon != null && weapon.ItemClass == UberstrikeItemClass.WeaponMelee;
 				var range = GetWeaponRange(weapon);
 				var desiredRange = isMelee ? range * 0.5f : range * 0.65f;
 				var now = DateTime.UtcNow;
 
-				if (now >= nextRoamTime) {
-					roamUntil = now.AddMilliseconds(Rand.Next(900, 1801));
-					nextRoamTime = now.AddMilliseconds(Rand.Next(2600, 5001));
-				}
-				if ((distance > desiredRange + 0.5f || now < roamUntil) && Room.TryGetBotRoutePoint(target, myPosition, out var routePoint)) {
+				if (distance > desiredRange + 0.5f && Room.TryGetBotRoutePoint(target, myPosition, out var routePoint)) {
 					FollowRoutePoint(actor, routePoint, false);
 				}
 
 				if (weapon == null || DateTime.UtcNow < nextFireTime)
 					return;
 
-				// Hard range cutoff per weapon archetype - a shotgun/splattergun bot can no longer
-				// "hit" from sniper distance just because a target wandered into the shared 32-unit
-				// search radius; each weapon only ever fires within its own effective range.
-				if (distance > Math.Min(range, 22f) || !HasRecentLineOfSightConfirmation(target))
+				// Hard range cutoff per weapon archetype keeps each weapon inside its own effective range.
+				if (distance > range || !HasRecentLineOfSightConfirmation(target))
 					return;
 
 				// Bots should fire in deliberate bursts and miss often enough to feel human.
@@ -472,6 +464,47 @@ namespace NekoNexus.Realtime.Server.Game {
 
 				var bodyPart = Rand.NextDouble() < 0.12 ? BodyPart.Head : BodyPart.Body;
 				Room.DirectHitDamage(Bot, target.Actor.Cmid, (byte)bodyPart, 1);
+			}
+
+			private void ChooseWeapon(GameActor actor, float distance) {
+				var now = DateTime.UtcNow;
+				if (now < nextWeaponChoice)
+					return;
+				nextWeaponChoice = now.AddMilliseconds(700);
+
+				var loadout = Bot.Loadout;
+				if (loadout == null)
+					return;
+				var choices = new List<Tuple<byte, UberStrikeItemWeaponView>>();
+				AddChoice(choices, 0, loadout.MeleeWeapon);
+				AddChoice(choices, 1, loadout.Weapon1);
+				AddChoice(choices, 2, loadout.Weapon2);
+				AddChoice(choices, 3, loadout.Weapon3);
+				if (choices.Count == 0)
+					return;
+
+				// Prefer melee up close, shotguns at short range, sniper rifles at long range,
+				// then the longest suitable ordinary gun. Slot choice only uses this bot's loadout.
+				var melee = choices.FirstOrDefault(c => c.Item2.ItemClass == UberstrikeItemClass.WeaponMelee);
+				var close = choices.Where(c => c.Item2.ItemClass == UberstrikeItemClass.WeaponShotgun || c.Item2.ItemClass == UberstrikeItemClass.WeaponSplattergun)
+					.OrderByDescending(c => GetWeaponRange(c.Item2)).FirstOrDefault();
+				var sniper = choices.FirstOrDefault(c => c.Item2.ItemClass == UberstrikeItemClass.WeaponSniperRifle);
+				var desired = distance <= 3.1f && melee != null ? melee
+					: distance <= 10f && close != null ? close
+					: distance >= 24f && sniper != null ? sniper
+					: choices.Where(c => c.Item2.ItemClass != UberstrikeItemClass.WeaponMelee)
+						.OrderBy(c => Math.Abs(GetWeaponRange(c.Item2) * 0.72f - distance)).FirstOrDefault();
+				if (desired == null)
+					desired = choices[0];
+				if (actor.ActorInfo.CurrentWeaponSlot != desired.Item1) {
+					Room.SwitchWeapon(Bot, desired.Item1);
+				}
+				Room.IsInSniperMode(Bot, desired.Item2.ItemClass == UberstrikeItemClass.WeaponSniperRifle && distance >= 24f);
+			}
+
+			private void AddChoice(List<Tuple<byte, UberStrikeItemWeaponView>> choices, byte slot, int itemId) {
+				if (itemId != 0 && Room.ShopManager.WeaponItems.TryGetValue(itemId, out var weapon) && weapon != null)
+					choices.Add(Tuple.Create(slot, weapon));
 			}
 
 			public void OnConfirmedHit(GamePeer attacker) {

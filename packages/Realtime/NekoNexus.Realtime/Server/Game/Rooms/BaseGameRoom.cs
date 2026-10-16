@@ -248,8 +248,6 @@ namespace NekoNexus.Realtime.Server.Game {
 
 			System.Diagnostics.Debug.Assert(peer.Room != null, "GamePeer is leaving room, but is not in any room.");
 			System.Diagnostics.Debug.Assert(peer.Room == this, "GamePeer is leaving room, but is not leaving the correct room.");
-			ClearBotRoute(peer);
-
 			foreach (var otherPeer in Peers) {
 				otherPeer.GameEventSender.SendPlayerLeftGame(peer.Actor.Cmid);
 			}
@@ -537,6 +535,24 @@ namespace NekoNexus.Realtime.Server.Game {
 
 		protected virtual void OnMatchEnded(EventArgs args) {
 			MatchEnded?.Invoke(this, args);
+		}
+
+		// Time-limit expiry must enter the same end-of-match pipeline as a kill-limit win.
+		// Resolve the winner before EndOfMatchState sends the result and AfterRoundState pays XP.
+		public void EndRoundByTimeLimit() {
+			if (HasRoundEnded || State.CurrentStateId != GameStateId.MatchRunning)
+				return;
+
+			if (IsTeamGame) {
+				GetCurrentScore(out _, out var blueScore, out var redScore);
+				WinningTeam = blueScore == redScore ? TeamID.NONE : blueScore > redScore ? TeamID.BLUE : TeamID.RED;
+			} else {
+				var leader = Players.Where(p => p.Actor != null).OrderByDescending(p => p.Actor.ActorInfo.Kills).FirstOrDefault();
+				WinningCmid = leader?.Actor?.Cmid ?? 0;
+			}
+
+			HasRoundEnded = true;
+			OnMatchEnded(new EventArgs());
 		}
 
 		protected virtual void OnPlayerKilled(PlayerKilledEventArgs args) {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.7.19 — Bot patrol and match completion fixes
+
+### Matches
+- End rounds directly when the server deadline expires, resolve the time-limit winner from the
+  final score, and continue through the existing match result and XP settlement flow.
+
+### Realtime bots
+- Patrol retained player-validated routes continuously instead of pausing most of the time or
+  forgetting routes after 12 seconds.
+- Switch between the bot's equipped melee, ranged, and sniper weapons based on target distance;
+  sniper shots use the sniper's effective range.
+
 ## 4.7.18 — Match clock and bot behavior fixes
 
 ### Matches

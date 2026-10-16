@@ -53,7 +53,7 @@ namespace NekoNexus.Realtime.Server.Game {
 			Room.PowerUpManager.Update();
 
 			if (Room.MetaData.TimeLimit > 0 && Room.RoundDeadlineUtc != DateTime.MinValue && DateTime.UtcNow >= Room.RoundDeadlineUtc) {
-				Room.HasRoundEnded = true;
+				Room.EndRoundByTimeLimit();
 			}
 		}
 
