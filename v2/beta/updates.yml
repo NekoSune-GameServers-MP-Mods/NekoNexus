@@ -1,5 +1,5 @@
-version: 2.1.2.20
-build: 4.7.15-261016-1514
+version: 2.1.2.21
+build: 4.7.15-261016-1517
 channel: beta
 platforms:
   win:
