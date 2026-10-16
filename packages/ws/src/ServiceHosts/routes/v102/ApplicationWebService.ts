@@ -16,6 +16,7 @@
  */
 
 import { ApiVersion } from '@/utils/enums';
+import { withServerRegionFlag } from '../../serverRegion';
 import { Map, MapSettings, PhotonServer, UserAccount } from '@festivaldev/nekonexus-models';
 import { BuildType, ChannelType, PhotonUsageType } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
 import {
@@ -110,7 +111,7 @@ export default class ApplicationWebService extends BaseWebService {
           outputStream,
           new AuthenticateApplicationView({
             IsEnabled: true,
-            GameServers: await PhotonServer.findAll({ where: { UsageType: PhotonUsageType.All }, raw: true }),
+            GameServers: (await PhotonServer.findAll({ where: { UsageType: PhotonUsageType.All }, raw: true })).map(withServerRegionFlag),
             CommServer:
               (
                 await PhotonServer.findAll({
@@ -118,7 +119,7 @@ export default class ApplicationWebService extends BaseWebService {
                   order: [['MinLatency', 'ASC']],
                   raw: true,
                 })
-              )[0] ?? null,
+              ).map(withServerRegionFlag)[0] ?? null,
             WarnPlayer: !ApplicationWebService.supportedClientVersions.includes(clientVersion),
             EncryptionInitVector: this.EncryptionInitVector,
             EncryptionPassPhrase: this.EncryptionPassPhrase,

@@ -639,7 +639,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       activePlayers,
       serversTotal: servers.length,
       serversOnline: servers.filter((s: any) => isOnline(s.LastResponseTime)).length,
-      servers: (servers as any[]).map((s) => ({ Name: s.Name, Region: s.Region, Online: isOnline(s.LastResponseTime) })),
+      servers: (servers as any[]).map((s) => ({ Name: s.Name, Region: s.Region, CountryCode: s.CountryCode ?? null, Online: isOnline(s.LastResponseTime) })),
     });
   }
 
@@ -1479,6 +1479,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
         Port: s.Port,
         UsageType: s.UsageType, // 6 = Comm, 1 = Game
         Region: s.Region,
+        CountryCode: s.CountryCode ?? null,
         Enabled: s.Enabled !== false,
         Online: isOnline(s.LastResponseTime),
         LastResponseTime: s.LastResponseTime,
@@ -1489,16 +1490,19 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   if (pathname === '/api/servers' && method === 'POST') {
     const b = await req.json().catch(() => ({}));
     if (b.PhotonId === undefined || b.PhotonId === null) return json({ error: 'PhotonId is required' }, 400);
+    const region = Number(b.Region ?? 1);
+    if (!Number.isInteger(region) || region < 0 || region > 5) return json({ error: 'Region must be one of the six game-supported regions.' }, 400);
+    const existing = await models.PhotonServer.findByPk(Number(b.PhotonId));
     const values = {
       PhotonId: Number(b.PhotonId),
       Name: String(b.Name ?? 'Server'),
       IP: String(b.IP ?? '127.0.0.1'),
       Port: Number(b.Port ?? 5055),
       UsageType: Number(b.UsageType ?? 6),
-      Region: Number(b.Region ?? 1),
+      Region: region,
+      CountryCode: typeof b.CountryCode === 'string' && /^[A-Z]{2}$/.test(b.CountryCode) ? b.CountryCode : existing?.CountryCode ?? null,
       Enabled: b.Enabled !== false,
     };
-    const existing = await models.PhotonServer.findByPk(values.PhotonId);
     if (existing) await existing.update(values);
     else await models.PhotonServer.create(values as any);
     return json({ ok: true });
@@ -1518,22 +1522,23 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
 
-  // ---- region detection from IP (UsEast0 EuWest1 AsiaPacific2 UsWest3 SouthKorea4 Japan5) ----
+  // ---- IP geolocation -> supported Photon region plus display location ----
   if (pathname === '/api/geo' && method === 'GET') {
     const ip = (url.searchParams.get('ip') ?? '').trim();
     try {
-      const r = await fetch(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,countryCode,continentCode,lon`);
+      const r = await fetch(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,continentCode,lon`);
       const g: any = await r.json();
-      if (g.status !== 'success') return json({ region: null, note: 'Could not geolocate (private/local IP?)' });
+      if (g.status !== 'success') return json({ region: null, countryCode: null, country: null, note: 'Could not geolocate (private/local IP?)' });
       let region = 0;
       if (g.countryCode === 'JP') region = 5;
       else if (g.countryCode === 'KR') region = 4;
       else if (g.continentCode === 'AS' || g.continentCode === 'OC') region = 2;
       else if (g.continentCode === 'EU' || g.continentCode === 'AF') region = 1;
-      else region = g.lon < -100 ? 3 : 0; // NA/SA: west vs east
-      return json({ region, countryCode: g.countryCode });
+      else if (g.continentCode === 'NA' || g.continentCode === 'SA') region = g.lon < -100 && g.continentCode === 'NA' ? 3 : 0;
+      else region = 2;
+      return json({ region, countryCode: g.countryCode, country: g.country, continentCode: g.continentCode });
     } catch {
-      return json({ region: null });
+      return json({ region: null, countryCode: null, country: null });
     }
   }
 

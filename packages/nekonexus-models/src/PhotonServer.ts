@@ -23,6 +23,7 @@ interface PhotonServerAttributes {
   IP?: string;
   Name?: string;
   Region?: RegionType;
+  CountryCode?: string | null;
   Port?: number;
   UsageType?: PhotonUsageType;
   MinLatency?: number;
@@ -36,6 +37,7 @@ export default class PhotonServer extends Model<PhotonServerAttributes> {
   declare IP: string;
   declare Name: string;
   declare Region: RegionType;
+  declare CountryCode: string | null;
   declare Port: number;
   declare UsageType: PhotonUsageType;
   declare MinLatency: number;
@@ -53,6 +55,7 @@ export default class PhotonServer extends Model<PhotonServerAttributes> {
         IP: DataTypes.STRING,
         Name: DataTypes.STRING,
         Region: DataTypes.INTEGER,
+        CountryCode: DataTypes.STRING(2),
         Port: DataTypes.INTEGER,
         UsageType: DataTypes.INTEGER,
         MinLatency: DataTypes.INTEGER,

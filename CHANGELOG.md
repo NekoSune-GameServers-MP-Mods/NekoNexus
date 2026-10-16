@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.7.16 — Server location flags and region detection
+
+### Servers
+- The admin server form detects a server's country and supported game-routing region from its IP, and saves the country code.
+- The game server list now receives a country flag token and displays the flag next to the server name without showing the token.
+- The public status page and admin dashboard show country/location labels and use the game's actual six supported region IDs, fixing Australia being labelled North America.
+
 ## 4.7.15 — Data-service retry and signup wallet fixes
 
 ### Client

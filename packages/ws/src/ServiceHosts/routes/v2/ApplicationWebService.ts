@@ -31,6 +31,7 @@ import {
 } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization';
 import { AuthenticateApplicationView } from '@festivaldev/uberstrike-js/UberStrike/DataCenter/Common/Entities';
 import BaseWebService from '../BaseWebService';
+import { withServerRegionFlag } from '../../serverRegion';
 
 export default class ApplicationWebService extends BaseWebService {
   static get ServiceName(): string {
@@ -67,10 +68,10 @@ export default class ApplicationWebService extends BaseWebService {
           new AuthenticateApplicationView({
             IsEnabled: true,
             // Only advertise servers that admins have left enabled (Enabled !== false).
-            GameServers: await PhotonServer.findAll({
+            GameServers: (await PhotonServer.findAll({
               where: { UsageType: PhotonUsageType.All, Enabled: { [Op.ne]: false } },
               raw: true,
-            }),
+            })).map(withServerRegionFlag),
             CommServer:
               (
                 await PhotonServer.findAll({
@@ -78,7 +79,7 @@ export default class ApplicationWebService extends BaseWebService {
                   order: [['MinLatency', 'ASC']],
                   raw: true,
                 })
-              )[0] ?? null,
+              ).map(withServerRegionFlag)[0] ?? null,
             WarnPlayer: !ApplicationWebService.supportedClientVersions.includes(clientVersion),
             EncryptionInitVector: this.EncryptionInitVector,
             EncryptionPassPhrase: this.EncryptionPassPhrase,

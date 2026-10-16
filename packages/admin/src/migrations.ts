@@ -71,6 +71,21 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    name: '20261016_0002_photon_server_country_code',
+    async up(sequelize) {
+      const [tables] = await sequelize.query(
+        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'PhotonServers'",
+      );
+      if (!(tables as any[]).length) return;
+      const [rows] = await sequelize.query(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'PhotonServers' AND COLUMN_NAME = 'CountryCode'",
+      );
+      if (!(rows as any[]).length) {
+        await sequelize.query('ALTER TABLE `PhotonServers` ADD COLUMN `CountryCode` VARCHAR(2) NULL');
+      }
+    },
+  },
 ];
 
 export async function runDatabaseMigrations(sequelize: Sequelize): Promise<void> {

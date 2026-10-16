@@ -134,7 +134,9 @@
 
   <script>
     const $ = (s) => document.querySelector(s);
-    const regionName = (r) => ({1:'Europe',2:'North America',3:'South America',4:'Asia',5:'Australia',6:'Comm'}[r] || 'Server');
+    const regionName = (r) => ({0:'US East / Americas',1:'Europe / Africa',2:'Asia Pacific / Oceania',3:'US West',4:'South Korea',5:'Japan'}[Number(r)] || 'Location unavailable');
+    const flagFor = (code) => /^[A-Z]{2}$/.test(code||'') ? String.fromCodePoint(...[...code].map(c => 127397 + c.charCodeAt(0))) : '🌐';
+    const countryName = (code) => { try { return code ? new Intl.DisplayNames(['en'], {type:'region'}).of(code) : ''; } catch { return code || ''; } };
     async function load() {
       try {
         const s = await (await fetch('/api/public/summary')).json();
@@ -150,7 +152,7 @@
         const list = $('#serverList');
         list.innerHTML = (s.servers||[]).map(x =>
           `<div class="glass rounded-xl border border-neutral-800 px-4 py-3 flex items-center justify-between">
-             <div><div class="font-medium">${(x.Name||'Server')}</div><div class="text-xs text-neutral-400">${regionName(x.Region)}</div></div>
+             <div><div class="font-medium">${flagFor(x.CountryCode)} ${(x.Name||'Server')}</div><div class="text-xs text-neutral-400">${x.CountryCode ? countryName(x.CountryCode) + ' · ' : ''}${regionName(x.Region)}</div></div>
              <span class="text-xs px-2 py-1 rounded-full ${x.Online?'bg-brand-900/40 text-brand-400':'bg-red-900/30 text-red-400'}">${x.Online?'Online':'Offline'}</span>
            </div>`).join('') || '<div class="text-neutral-500 text-sm">No servers configured.</div>';
       } catch (e) { $('#statusText').textContent = 'Status unavailable'; }

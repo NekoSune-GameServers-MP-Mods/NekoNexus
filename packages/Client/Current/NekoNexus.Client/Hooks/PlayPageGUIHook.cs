@@ -35,4 +35,16 @@ namespace NekoNexus.Client {
 			return false;
 		}
 	}
+
+	[HarmonyPatch(typeof(PhotonServer), "get_Name")]
+	public static class PhotonServerNameHook {
+		[HarmonyPostfix]
+		public static void Postfix(ref string __result) {
+			if (string.IsNullOrEmpty(__result) || __result.Length < 5 || __result[0] != '[') return;
+			var tokenEnd = __result.IndexOf(']');
+			if (tokenEnd == 3 && char.IsUpper(__result[1]) && char.IsUpper(__result[2])) {
+				__result = __result.Substring(tokenEnd + 1).TrimStart();
+			}
+		}
+	}
 }

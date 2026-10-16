@@ -309,10 +309,11 @@
           <div><label class="text-xs text-slate-400">Port</label><input id="sPort" type="number" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 outline-none focus:border-brand-500" value="5055" /></div>
         </div>
         <div>
-          <label class="text-xs text-slate-400">Region <button id="sDetect" type="button" class="text-brand-400 hover:underline ml-1">detect from IP</button></label>
+          <label class="text-xs text-slate-400">Game routing region <button id="sDetect" type="button" class="text-brand-400 hover:underline ml-1">detect from IP</button></label>
           <select id="sRegion" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 outline-none focus:border-brand-500">
-            <option value="0">US East</option><option value="1">EU West</option><option value="2">Asia Pacific</option><option value="3">US West</option><option value="4">South Korea</option><option value="5">Japan</option>
+            <option value="0">US East (Americas)</option><option value="1">EU West (Europe / Africa)</option><option value="2">Asia Pacific (Asia / Oceania)</option><option value="3">US West</option><option value="4">South Korea</option><option value="5">Japan</option>
           </select>
+          <div id="sLocation" class="text-xs text-slate-400 mt-1">Location is detected from the server IP.</div>
         </div>
         <div id="serverModalErr" class="text-sm text-red-400 hidden"></div>
       </div>
@@ -523,10 +524,11 @@
     async function loadServers() {
       const list = await api('/api/servers');
       const typeName = (t) => t === 6 ? 'Comm' : t === 1 ? 'Game' : ('Type ' + t);
+      const regionName = (r) => ({0:'US East / Americas',1:'Europe / Africa',2:'Asia Pacific / Oceania',3:'US West',4:'South Korea',5:'Japan'}[Number(r)] || 'Location unavailable');
       $('#serverRows').innerHTML = list.map(s => `
         <tr class="border-b border-slate-800/60 hover:bg-slate-800/30">
           <td class="p-3"><span class="inline-flex items-center gap-2"><span class="h-2.5 w-2.5 rounded-full ${s.Online?'bg-brand-500 animate-pulse':'bg-red-500'}"></span>${s.Online?'Online':'Offline'}</span></td>
-          <td class="p-3 font-medium">${s.Name||''}</td>
+          <td class="p-3"><div class="font-medium">${s.Name||''}</div><div class="text-xs text-slate-400">${s.CountryCode ? s.CountryCode + ' · ' : ''}${regionName(s.Region)}</div></td>
           <td class="p-3 font-mono text-slate-300">${s.IP}:${s.Port}</td>
           <td class="p-3">${typeName(s.UsageType)}</td>
           <td class="p-3"><button data-toggle="${s.PhotonId}" class="px-2 py-1 rounded text-xs ${s.Enabled?'bg-brand-600/20 text-brand-400':'bg-slate-700 text-slate-400'}">${s.Enabled?'Enabled':'Disabled'}</button></td>
@@ -540,6 +542,22 @@
       $('#serverRows').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openServer(JSON.parse(b.dataset.edit)));
     }
 
+    let serverCountryCode = null;
+    const setServerLocation = (g) => {
+      if (g?.countryCode) serverCountryCode = g.countryCode;
+      const region = ['US East (Americas)', 'EU West (Europe / Africa)', 'Asia Pacific (Asia / Oceania)', 'US West', 'South Korea', 'Japan'][Number(g?.region)];
+      $('#sLocation').textContent = g?.country
+        ? `${g.country}${g.countryCode ? ` (${g.countryCode})` : ''} · ${region || 'Location detected'}`
+        : (g?.note || 'Could not detect location. Choose the routing region manually.');
+    };
+    async function detectServerLocation() {
+      const ip = $('#sIp').value.trim(); if (!ip) return;
+      try {
+        const g = await api('/api/geo?ip=' + encodeURIComponent(ip));
+        if (g.region !== undefined && g.region !== null) $('#sRegion').value = g.region;
+        setServerLocation(g);
+      } catch { setServerLocation(null); }
+    }
     function openServer(s) {
       $('#serverModalTitle').textContent = s ? 'Edit server' : 'Add server';
       $('#sId').value = s?.PhotonId ?? '';
@@ -548,19 +566,20 @@
       $('#sIp').value = s?.IP ?? '127.0.0.1';
       $('#sPort').value = s?.Port ?? (s?.UsageType === 1 ? 5155 : 5055);
       $('#sRegion').value = s?.Region ?? 0;
+      serverCountryCode = s?.CountryCode ?? null;
+      $('#sLocation').textContent = serverCountryCode ? `Saved location: ${serverCountryCode}` : 'Location is detected from the server IP.';
       $('#serverModalErr').classList.add('hidden');
       $('#serverModal').classList.remove('hidden');
+      if (!serverCountryCode && $('#sIp').value !== '127.0.0.1') detectServerLocation();
     }
-    $('#sDetect').onclick = async () => {
-      const ip = $('#sIp').value.trim(); if (!ip) return;
-      try { const g = await api('/api/geo?ip=' + encodeURIComponent(ip)); if (g.region !== undefined && g.region !== null) { $('#sRegion').value = g.region; } } catch {}
-    };
+    $('#sDetect').onclick = detectServerLocation;
+    $('#sIp').addEventListener('change', detectServerLocation);
     $('#addServer').onclick = () => openServer(null);
     $('#serverCancel').onclick = () => $('#serverModal').classList.add('hidden');
     $('#serverSave').onclick = async () => {
       try {
         await api('/api/servers', { method: 'POST', body: JSON.stringify({
-          PhotonId: Number($('#sId').value), UsageType: Number($('#sType').value), Name: $('#sName').value, IP: $('#sIp').value, Port: Number($('#sPort').value), Region: Number($('#sRegion').value)
+          PhotonId: Number($('#sId').value), UsageType: Number($('#sType').value), Name: $('#sName').value, IP: $('#sIp').value, Port: Number($('#sPort').value), Region: Number($('#sRegion').value), CountryCode: serverCountryCode
         }) });
         $('#serverModal').classList.add('hidden'); loadServers();
       } catch (err) { const e = $('#serverModalErr'); e.textContent = err.message; e.classList.remove('hidden'); }

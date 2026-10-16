@@ -6,7 +6,7 @@
 ;         self-contained toolkit in .release\client\_pak\free-server\).
 
 #define AppName    "NekoNexus for UberStrike"
-#define AppVer     "4.7.15"
+#define AppVer     "4.7.16"
 #define Publisher  "NekoSuneVR"
 #define ServerHost "nekonexus.nekosunevr.co.uk"
 ; payload produced by misc\bundle-client.ps1
