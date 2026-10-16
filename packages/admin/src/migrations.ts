@@ -43,7 +43,9 @@ const migrations: Migration[] = [
         const signature = `${index.unique ? 'unique' : 'index'}:${index.columns.join(',')}`;
         const keep = seen.get(signature);
         if (keep) {
-          await sequelize.query(`ALTER TABLE `PaymentOrders` DROP INDEX ${sequelize.getQueryInterface().quoteIdentifier(index.name)}`);
+          await sequelize.query(
+            "ALTER TABLE `PaymentOrders` DROP INDEX " + sequelize.getQueryInterface().quoteIdentifier(index.name),
+          );
           // eslint-disable-next-line no-console
           console.log(`[db:migrate] Removed duplicate PaymentOrders index "${index.name}" (kept "${keep}")`);
         } else {
@@ -52,8 +54,15 @@ const migrations: Migration[] = [
       }
 
       const [remainingRows] = await sequelize.query('SHOW INDEX FROM `PaymentOrders`');
-      const hasExternalIdUnique = (remainingRows as any[]).some((row) =>
-        Number(row.Non_unique) === 0 && String(row.Column_name) === 'ExternalId' && Number(row.Seq_in_index) === 1,
+      const remainingIndexes = new Map<string, { unique: boolean; columns: string[] }>();
+      for (const row of remainingRows as any[]) {
+        const name = String(row.Key_name);
+        const index = remainingIndexes.get(name) ?? { unique: Number(row.Non_unique) === 0, columns: [] };
+        index.columns[Number(row.Seq_in_index) - 1] = String(row.Column_name);
+        remainingIndexes.set(name, index);
+      }
+      const hasExternalIdUnique = [...remainingIndexes.values()].some(
+        (index) => index.unique && index.columns.length === 1 && index.columns[0] === 'ExternalId',
       );
       if (!hasExternalIdUnique) {
         await sequelize.query(
@@ -65,12 +74,12 @@ const migrations: Migration[] = [
 ];
 
 export async function runDatabaseMigrations(sequelize: Sequelize): Promise<void> {
-  await sequelize.query(`
-    CREATE TABLE IF NOT EXISTS `NekoNexusMigrations` (
-      `Name` VARCHAR(191) NOT NULL PRIMARY KEY,
-      `ExecutedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB
-  `);
+  await sequelize.query(
+    'CREATE TABLE IF NOT EXISTS `NekoNexusMigrations` (' +
+      '`Name` VARCHAR(191) NOT NULL PRIMARY KEY, ' +
+      '`ExecutedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' +
+      ') ENGINE=InnoDB',
+  );
 
   for (const migration of migrations) {
     const [rows] = await sequelize.query(
