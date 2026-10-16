@@ -74,13 +74,6 @@ if (unityEngineReference is null)
 }
 
 var unityEngine = resolver.Resolve(unityEngineReference);
-var applicationType = unityEngine.MainModule.GetType("UnityEngine.Application")
-    ?? throw new InvalidOperationException("Could not find UnityEngine.Application.");
-var targetFrameRateSetter = assembly.MainModule.ImportReference(applicationType.Methods.Single(method => method.Name == "set_targetFrameRate"
-    && method.IsStatic && method.Parameters.Count == 1 && method.Parameters[0].ParameterType.FullName == "System.Int32"));
-var startupIl = moveNext.Body.GetILProcessor();
-startupIl.InsertBefore(moveNext.Body.Instructions[0], startupIl.Create(OpCodes.Ldc_I4, 30));
-startupIl.InsertBefore(moveNext.Body.Instructions[1], startupIl.Create(OpCodes.Call, targetFrameRateSetter));
 var uiScale = CreateAndroidLoginScale(assembly.MainModule, unityEngine.MainModule);
 var panels = new[] { "LoginPanelGUI", "SignupPanelGUI", "CompleteAccountPanelGUI" };
 foreach (var panelName in panels)
@@ -109,7 +102,6 @@ assembly.Dispose();
 File.Move(temporaryPath, assemblyPath, overwrite: true);
 Console.WriteLine("Bypassed the Tegra-only startup check and enlarged Android login, signup, and name panels.");
 Console.WriteLine("Persisted Remember Me credentials immediately after writing Android login preferences.");
-Console.WriteLine("Capped the legacy Android client at 30 FPS to keep emulator input responsive.");
 return 0;
 
 static (MethodDefinition Begin, MethodDefinition End, MethodDefinition EditName) CreateAndroidLoginScale(ModuleDefinition module, ModuleDefinition unity)

@@ -444,7 +444,6 @@ def main() -> int:
     print("APK signatures were removed. Sign the APK before installing it on Android.")
     print("Enabled small-screen support and removed the original 600 dp tablet requirement.")
     print("Installed the APK's full Unity/Mono native libraries instead of its proxy loaders.")
-    print("Made the legacy Android clan lookup fail open so it cannot stall post-login loading.")
     print(f"Set target API to {args.target_sdk}; minimum API is unchanged.")
     print(f"Set Android version to {args.version_name} (code {args.version_code}).")
     if args.target_sdk < 23:

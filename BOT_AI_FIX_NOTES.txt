@@ -1,0 +1,183 @@
+BOT AI FIX - STATUS: shipped 4.7.11 + 4.7.12 + 4.7.13, 2 items still open
+==============================================================
+
+Reported issues (across two rounds of testing):
+  Round 1 (FFA deathmatch): bots float/fly around the map, aimbot/shoot
+  through walls at any range regardless of weapon type, and a request to
+  confirm bots don't share health/shield with real players.
+  Round 2 (Team Deathmatch): bots still look like they're floating/not
+  walking like a normal human, match timer stuck at 05:00 (not counting
+  down), and bots don't go after enemies in TDM specifically.
+
+File touched: packages/Realtime/NekoNexus.Realtime/Server/Game/Rooms/BaseGameRoom.Bots.cs
+Also touched (round 2 diagnostics): MatchRunningState.cs, PrepareNextRoundState.cs
+  (both under .../Server/Game/States/Match/)
+
+===========================================================
+SHIPPED - 4.7.11 (movement range + vertical flight)
+===========================================================
+- Per-weapon-class engagement range table (WeaponRangeByClass): Shotgun 9,
+  Splattergun 10, Cannon 14, Machinegun 22, Launcher 18, SniperRifle 45,
+  Melee 2.5, default 16. AcquireTarget/Engage use the bot's own weapon's
+  range instead of one flat 32-unit bubble for every weapon - fixes
+  "shotgun bot sniping from across the map."
+- MoveToward() now steps horizontal (X/Z) and vertical (Y) separately,
+  each capped to a walking-speed rate (MoveSpeed horizontal, new
+  MaxVerticalSpeed=6/sec vertical) instead of a straight 3-axis
+  Vector3.MoveTowards - stops bots beelining through the air toward an
+  elevated waypoint/enemy.
+- Also fixed an UNRELATED pre-existing build blocker hit along the way:
+  packages/AssemblyReferences/Photon.SocketServer.dll was a stale build
+  of the Photon shim, missing a constructor GamePeer.Bot.cs needed.
+  Rebuilding shims/Photon.SocketServer.Shim regenerated the drop-in DLL.
+- Checked UberStrikeItemWeaponView.CombatRange as a source of real
+  per-weapon range data - confirmed NOT usable (in shop.json it's just a
+  duplicate of SplashRadius, only set on splash weapons, always 1 on
+  every hitscan weapon; never consumed anywhere in gameplay code).
+- Bot health/shield: CONFIRMED NOT AN ISSUE, twice now (re-verified
+  directly in DirectHitDamage, BaseGameRoom.cs:622). Every player (bot or
+  human) gets its own freshly-constructed GameActorInfo instance;
+  Health/ArmorPoints/ArmorPointCapacity are plain instance properties,
+  never static/shared. DirectHitDamage looks up the specific target
+  actor by Cmid and only ever mutates that one actor's own fields - a
+  bot taking damage cannot touch any other player's health/shield, and
+  never could. No code change needed or made here.
+
+===========================================================
+SHIPPED - 4.7.12 (the actual "floating" root cause)
+===========================================================
+Root cause found: the client's AvatarAnimationController (Core/UberStrike.
+Game/AvatarAnimationController.cs) drives the walk/run/idle/grounded
+animator blend tree ENTIRELY from the position update's Velocity and
+KeyState/MovementState bytes (WalkingSpeed <- Velocity magnitude,
+IsWalking <- KeyState, IsGrounded <- MovementState & Grounded). BotBrain
+was only ever writing Position + HorizontalRotation each tick - Velocity/
+KeyState/MovementState stayed at their zero defaults forever. Result:
+position genuinely moved every tick (confirmed correct in 4.7.11), but
+every other client rendered the bot playing a static idle pose while
+sliding across the ground/air - exactly the "floating, not walking like
+a normal human" look, independent of the 4.7.11 vertical-speed fix.
+
+Fix (BotBrain.Tick / MoveToward):
+  - Tick() now resets Velocity=zero, KeyState=Still, MovementState=
+    Grounded every tick before Engage/Patrol run (mirrors a real client
+    reporting "standing still, grounded" by default).
+  - MoveToward() overwrites Velocity (direction * TICK_TRATE, i.e. actual
+    per-second speed) and KeyState=Forward whenever it actually moves the
+    bot that tick.
+  - actor.UpdatePosition = true is now set unconditionally each tick
+    (matches how a real client's UpdatePositionAndRotation op always
+    marks it dirty), so a bot stopping is promptly broadcast instead of
+    other clients keeping a stale "walking" animation state.
+Build verified clean (0 errors) after this change.
+
+===========================================================
+STILL OPEN - not fixed, diagnostics added instead (4.7.12)
+===========================================================
+1. TDM MATCH TIMER STUCK AT 05:00 (not counting down)
+2. TDM BOTS DON'T GO AFTER ENEMIES
+
+Extensive static investigation was done for both (traced the full
+client-server match-countdown time-sync chain: PhotonPeer TimeSync op
+254 <-> RealtimeHost, GameState.StartMatch/GameTime/RemainingTime,
+GameStateHelper.UpdateMatchTime called every frame from the client's
+MatchRunningState.OnUpdate - the sync mechanism itself looks intact and
+was already fixed once before per memory nekonexus-live-economy-
+stability.md "MATCH COUNTDOWN FIX (was stuck at 10:00)" from 2026-06-26).
+Also traced the TDM team-balance path end to end (PickBotTeam alternates
+correctly as bots are added; TeamDeathMatchRoom.CanStartMatch requires
+>=1 BLUE and >=1 RED; PreparePlayer does NOT touch Team so it can't be
+getting reset between rounds; AcquireTarget's same-team skip logic reads
+correctly). Every concrete hypothesis I could form and check via static
+reading was ruled out - couldn't reproduce or pin an exact root cause
+without seeing this actually happen live.
+
+Added targeted diagnostic logging instead, so the NEXT time this
+reproduces, the server log will show the answer directly instead of more
+guessing:
+  - MatchRunningState.cs OnPlayerLeft: logs blue/red/total player counts
+    whenever a mid-match leave (bot or human) drops CanStartMatch to
+    false and force-ends the round early.
+  - PrepareNextRoundState.cs OnPlayerLeft: same logging when a leave
+    during the pre-match countdown stops it (this would explain a match
+    that never actually reaches MatchRunning - frozen bots + frozen
+    "05:00" placeholder timer would look exactly like what was reported).
+  - BaseGameRoom.Bots.cs AddBot(): now logs each bot's assigned team, so
+    a lopsided team split (e.g. all bots ending up on one side) would be
+    visible immediately in the log.
+
+NEXT STEP: reproduce a TDM match with bots again, then grab the Realtime
+server log covering that session (bot adds with their team, and any
+"dropped CanStartMatch to false" lines) and share it. That will very
+likely nail both remaining issues in one pass instead of more guessing.
+
+===========================================================
+SHIPPED - 4.7.13 (admin-controlled toggle, BETA, off by default)
+===========================================================
+User asked for an enable/disable option, off by default, labeled BETA,
+AND an actual UI ("bot enabled menu... like in UI or something") rather
+than just a config file edit. Implemented the same way the existing
+global 2x/5x coin-boost admin feature works (BoostManager/BoostState
+pattern) instead of a YAML setting, so it can be flipped with no
+realtime restart:
+
+- New DB table `BotsConfig` (Id=1, Enabled/FillTarget/MaxBots), owned by
+  the admin service, created lazily on first use. Seeded Enabled=0.
+- Admin API: GET/POST /api/config/bots (packages/admin/src/index.ts) -
+  same shape as /api/config/boost. POST persists then best-effort calls
+  the ws internal bridge so it applies live.
+- ws: new `/internal/set-bots-config` bridge endpoint (WebServiceHost.ts,
+  INTERNAL_API_KEY-gated) + new `BotsConfigManager.ts` (mirrors
+  BoostManager.ts) caching the current value in memory, broadcasting to
+  all connected Game servers on change, and re-pushing to a Game server
+  the moment it (re)connects (wired into NekoNexusService.ts alongside
+  BoostManager's same two hooks).
+- New master-socket packet `SetBotsConfig` added to BOTH enums in
+  lockstep (packages/Realtime/.../WebSocket/WebSocket.PacketType.cs and
+  packages/ws/src/ServiceHosts/WebSocket/PacketType.ts), wired into both
+  Payload (de)serializers (C# decode-only; TS encode+decode) - it's a
+  plain { Enabled, FillTarget, MaxBots } dict, same wire shape as
+  SetBoost.
+- New `BotsConfigState.cs` + `GameServerApplication.BotsConfig` (static,
+  volatile, mirrors `Boost`) - updated from the SetBotsConfig case in
+  GameServerApplication's master-socket DataReceived switch.
+- `BaseGameRoom.Bots.cs` ComputeTargetBotCount now reads
+  `GameServerApplication.BotsConfig` instead of
+  `Configuration.GameplaySettings` - the YAML BotsEnabled/BotFillTarget/
+  MaxBots fields are REMOVED from ApplicationConfiguration.cs and both
+  shipped config templates (packages/Realtime/NekoNexus.Realtime/
+  NekoNexus.Realtime.yml, docker/config/NekoNexus.Realtime.yml) since
+  they're superseded by the DB-backed admin setting.
+- Admin dashboard UI: new "AI fill bots" card on the Gifts & Events page
+  (packages/admin/src/dashboard.html) with a Beta badge, Enabled select,
+  FillTarget/MaxBots number inputs, and a save button - mirrors the
+  existing Global coin boost card's layout/JS pattern exactly
+  (loadBots()/save handler alongside loadBoost()).
+- Verified: NekoNexus.Realtime rebuilds clean (0 errors). ws and admin
+  packages both bundle clean with `bun build --target=bun` (bun doesn't
+  type-check, but this catches syntax/unresolved-import errors); ran
+  `tsc --noEmit` against packages/ws too - filtered for the specific
+  files touched here and found zero errors from this change (the
+  tsc run surfaces a large pile of PRE-EXISTING path-alias errors across
+  nekonexus-models/uberstrike-js unrelated to this feature - do not treat
+  those as caused by this work).
+- NOT tested live (no way to run the actual admin dashboard + a
+  connected Game server + browser in this environment) - next step is
+  for the user to redeploy admin+ws+realtime and click the toggle on a
+  live server to confirm the end-to-end push actually works.
+
+===========================================================
+VERSIONING
+===========================================================
+- 4.7.11: fix(realtime) + chore(release) commits, tag v4.7.11, pushed.
+- 4.7.12: CHANGELOG.md / installer AppVer / UpdateGenerator.ts PRODUCT_
+  VERSION all bumped to 4.7.12; commit + tag + push done the same way.
+- 4.7.13: same version-bump pattern; CHANGELOG entry covers both the
+  YAML removal and the new admin UI toggle together (not committed until
+  both were finished, so they ship as one release).
+- Deploy note (4.7.11/4.7.12): server-only change (NekoNexus.Realtime).
+  The client-mod deploy checklist (misc\publish-update.ps1 -> server-data
+  /updates -> installer) does NOT apply - redeploy the Realtime server
+  image/process instead.
+- Deploy note (4.7.13): touches THREE images this time - Realtime, ws,
+  AND admin all need redeploying for the toggle to work end-to-end.
