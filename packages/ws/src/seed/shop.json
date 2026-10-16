@@ -13721,52 +13721,6 @@
 			"StartAmmo": 100,
 			"Tier": 1,
 			"WeaponSecondaryAction": 0
-		},
-		{
-			"ItemClass": 6,
-			"ID": 20144,
-			"Name": "Nyan Cat Cannon",
-			"PrefabName": "Cannon",
-			"Description": "A legendary rainbow launcher. Fires high-velocity rockets at meow-ch speed. (Pop-tart not included.)",
-			"Prices": [
-				{
-					"Price": 2800,
-					"Currency": 1,
-					"Amount": 1,
-					"Duration": 5
-				},
-				{
-					"Price": 45000,
-					"Currency": 2,
-					"Amount": 1,
-					"Duration": 5
-				}
-			],
-			"ItemProperties": {},
-			"AccuracySpread": 0,
-			"CombatRange": 250,
-			"CriticalStrikeBonus": 0,
-			"DamageKnockback": 250,
-			"DamagePerProjectile": 70,
-			"DamagePerSecond": 0,
-			"DefaultZoomMultiplier": 0,
-			"HasAutomaticFire": true,
-			"MaxAmmo": 40,
-			"MaxZoomMultiplier": 0,
-			"MinZoomMultiplier": 0,
-			"MissileBounciness": 0,
-			"MissileForceImpulse": 0,
-			"MissileTimeToDetonate": 0,
-			"ProjectileSpeed": 90,
-			"ProjectilesPerShot": 1,
-			"RateOfFire": 800,
-			"RecoilKickback": 12,
-			"RecoilMovement": 32,
-			"SecondaryActionReticle": 0,
-			"SplashRadius": 280,
-			"StartAmmo": 24,
-			"Tier": 4,
-			"WeaponSecondaryAction": 0
 		}
 	]
 }

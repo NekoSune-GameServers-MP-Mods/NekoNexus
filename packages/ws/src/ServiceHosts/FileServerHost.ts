@@ -51,7 +51,7 @@ export default class FileServerHost {
     // the update payload on this box. Set UPDATE_RELAY_URL to override the Pages base, or to '' to
     // disable the relay and serve updates from local wwwroot/updates instead. If the relay is
     // unreachable or the file isn't on Pages, it falls through to any local copy (next()).
-    const relayBase = (process.env.UPDATE_RELAY_URL ?? 'https://nekosunevr.github.io/NekoNexus').replace(/\/+$/, '');
+    const relayBase = (process.env.UPDATE_RELAY_URL ?? 'https://nekosune-gameservers-mp-mods.github.io/NekoNexus').replace(/\/+$/, '');
     if (relayBase) {
       this.expressApp.use('/updates', async (req, res, next) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') return next();

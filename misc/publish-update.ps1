@@ -101,7 +101,7 @@ foreach ($ch in $channels) {
   # Seed the prior version (raw branch = updated immediately on push, unlike Pages). gen-updates reads
   # this existing updates.yml, bumps its last segment, then overwrites it.
   try {
-    Invoke-WebRequest "https://raw.githubusercontent.com/NekoSuneVR/NekoNexus/updates/v2/$ch/updates.yml" -OutFile (Join-Path $chDir 'updates.yml') -UseBasicParsing -TimeoutSec 20 | Out-Null
+    Invoke-WebRequest "https://raw.githubusercontent.com/nekosune-gameservers-mp-mods/NekoNexus/updates/v2/$ch/updates.yml" -OutFile (Join-Path $chDir 'updates.yml') -UseBasicParsing -TimeoutSec 20 | Out-Null
     Write-Host "    seeded prior version for $ch"
   } catch { Write-Host "    (no prior $ch manifest to seed - first publish)" }
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.7.14 — Updater moved to the new GitHub organization
+
+### Client updates
+- The web service now relays updater requests through the new NekoNexus GitHub Pages site. The
+  client updater continues using the configured web service URL.
+- Client update publishing now reads the existing manifest from the new repository location, and
+  generated update prompts report product version 4.7.14.
+
+### Shop
+- Removed the unfinished custom cannon from the seeded catalogue. Running the explicit seed command
+  removes its sale prices while retaining the item record for existing inventories and loadouts.
+
+### Deployment
+- Updated Docker image references and website links to the new GitHub organization.
+
 ## 4.7.13 — AI fill bots are now BETA, admin-controlled, off by default
 
 ### Admin

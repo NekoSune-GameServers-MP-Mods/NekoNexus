@@ -42,7 +42,7 @@ services:
   #   PARADISE_PUBLIC_HOST=192.168.1.50 docker compose run --rm seed
   # It does NOT start with `docker compose up` (it's behind the "tools" profile).
   seed:
-    image: ghcr.io/nekosunevr/nekonexus-webservices:latest
+    image: ghcr.io/nekosune-gameservers-mp-mods/nekonexus-webservices:latest
     profiles: ["tools"]
     depends_on:
       db:
@@ -55,7 +55,7 @@ services:
     command: ["bun", "src/index.ts", "seed"]
 
   webservices:
-    image: ghcr.io/nekosunevr/nekonexus-webservices:latest
+    image: ghcr.io/nekosune-gameservers-mp-mods/nekonexus-webservices:latest
     pull_policy: always
     # build:
     #   context: .
@@ -79,7 +79,7 @@ services:
       - ./server-data/updates:/app/packages/ws/wwwroot/updates:ro
 
   realtime-comm:
-    image: ghcr.io/nekosunevr/nekonexus-realtime:latest
+    image: ghcr.io/nekosune-gameservers-mp-mods/nekonexus-realtime:latest
     pull_policy: always
     # build:
     #   context: .
@@ -94,7 +94,7 @@ services:
       - "5055:5055/udp"
 
   realtime-game:
-    image: ghcr.io/nekosunevr/nekonexus-realtime:latest
+    image: ghcr.io/nekosune-gameservers-mp-mods/nekonexus-realtime:latest
     pull_policy: always
     # build:
     #   context: .
@@ -109,7 +109,7 @@ services:
   # Admin dashboard (server/player/store management). Open http://<host>:8088 — default
   # login admin/admin; change it on the Account page on first run.
   admin:
-    image: ghcr.io/nekosunevr/nekonexus-admin:latest
+    image: ghcr.io/nekosune-gameservers-mp-mods/nekonexus-admin:latest
     pull_policy: always
     # build:
     #   context: .

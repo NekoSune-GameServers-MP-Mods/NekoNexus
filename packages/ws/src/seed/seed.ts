@@ -79,7 +79,8 @@ export default async function runSeed() {
   }
 
   // Seed default/reference data ONLY into tables that are currently empty, so re-running the
-  // seed on a live server never wipes anything. To re-seed a specific table, empty it first.
+  // seed on a live server never wipes those tables. The explicit retired-item cleanup below is
+  // the only shop-catalog removal performed by this command.
   async function seedIfEmpty<T>(model: any, rows: T[], label: string): Promise<void> {
     const existing = await model.count();
     if (existing > 0) {
@@ -144,10 +145,16 @@ export default async function runSeed() {
     if (backfilled) Log.info(`Backfilled ${backfilled} shop price(s) onto previously-free rows.`);
   }
 
+  // Retire the unfinished custom cannon (ID 20144) from existing shops. Keep the item row so
+  // existing owners' inventory and loadouts can still resolve it; without prices it is not for sale.
+  const retiredCustomWeaponIds = [20144];
+  const retiredPriceRows = await models.ShopItemPrice.destroy({ where: { ID: retiredCustomWeaponIds } });
+  if (retiredPriceRows) Log.info(`Removed ${retiredPriceRows} price row(s) for retired custom weapons.`);
+
   // Insert shop items present in the seed catalogue but MISSING from an existing DB. seedIfEmpty
-  // above only fills entirely-empty tables, so new catalogue additions (e.g. the Nyan Cat Cannon)
-  // would otherwise never reach a live server. This is additive only - it never modifies items the
-  // DB already has, just adds the new ones and their prices.
+  // above only fills entirely-empty tables, so new catalogue additions would otherwise never reach
+  // a live server. This is additive only - it never modifies items the DB already has, just adds
+  // the new ones and their prices.
   async function seedNewItems(model: any, items: any[], label: string): Promise<void> {
     if (!items?.length) return;
     const existing = await model.findAll({ attributes: ['ID'], raw: true });
@@ -176,7 +183,7 @@ export default async function runSeed() {
 
   await sequelize.query('SET FOREIGN_KEY_CHECKS = 1');
 
-  Log.info('Database seed complete (existing data preserved).');
+  Log.info('Database seed complete (existing data preserved except explicitly retired shop entries).');
   process.exit(0);
 }
 
