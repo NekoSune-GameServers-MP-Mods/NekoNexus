@@ -236,6 +236,7 @@ namespace NekoNexus.Realtime.Server.Game {
 
 			System.Diagnostics.Debug.Assert(peer.Room != null, "GamePeer is leaving room, but is not in any room.");
 			System.Diagnostics.Debug.Assert(peer.Room == this, "GamePeer is leaving room, but is not leaving the correct room.");
+			ClearBotRoute(peer);
 
 			foreach (var otherPeer in Peers) {
 				otherPeer.GameEventSender.SendPlayerLeftGame(peer.Actor.Cmid);
@@ -879,6 +880,8 @@ namespace NekoNexus.Realtime.Server.Game {
 				peer.Actor.Movement.MovementState = moveState;
 				peer.Actor.UpdatePosition = true;
 			}
+
+			RecordBotRoutePoint(peer);
 		}
 
 		private void KickPlayer(GamePeer peer, int cmid) {

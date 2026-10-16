@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.7.17 — Human-like bot movement and firing
+
+### Realtime bots
+- Bots follow short movement traces recorded from real players in the same room, including valid
+  grounded, jumping, and water movement. This avoids inventing map paths without server-side map
+  collision or water geometry.
+- Bots stop when no nearby valid route is available, and fire more slowly with lower accuracy.
+
 ## 4.7.16 — Server location flags and region detection
 
 ### Servers

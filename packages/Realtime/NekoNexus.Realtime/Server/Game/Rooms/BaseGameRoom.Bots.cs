@@ -25,6 +25,74 @@ namespace NekoNexus.Realtime.Server.Game {
 
 		private readonly Dictionary<GamePeer, BotBrain> botBrains = new Dictionary<GamePeer, BotBrain>();
 		private readonly System.Random botRandom = new System.Random((int)DateTime.UtcNow.Ticks);
+		private readonly object botRouteLock = new object();
+		private readonly Dictionary<GamePeer, Queue<BotRoutePoint>> botRoutes = new Dictionary<GamePeer, Queue<BotRoutePoint>>();
+
+		private sealed class BotRoutePoint {
+			public Vector3 Position;
+			public byte MovementState;
+			public byte KeyState;
+			public DateTime Time;
+		}
+
+		// Reuse movement that a real client has already proven valid on this map. The realtime
+		// server has no Unity collision or water geometry, so it cannot safely invent jumps,
+		// swim surfaces, or paths around walls on its own.
+		private void RecordBotRoutePoint(GamePeer peer) {
+			if (peer == null || peer.IsBot || peer.Actor == null || !peer.Actor.ActorInfo.IsAlive)
+				return;
+
+			var now = DateTime.UtcNow;
+			var position = (Vector3)peer.Actor.Movement.Position;
+			lock (botRouteLock) {
+				if (!botRoutes.TryGetValue(peer, out var route)) {
+					route = new Queue<BotRoutePoint>();
+					botRoutes[peer] = route;
+				}
+
+				var last = route.Count == 0 ? null : route.Last();
+				if (last != null && Vector3.Distance(last.Position, position) < 0.65f && (now - last.Time).TotalMilliseconds < 300)
+					return;
+
+				route.Enqueue(new BotRoutePoint {
+					Position = position,
+					MovementState = peer.Actor.Movement.MovementState,
+					KeyState = peer.Actor.Movement.KeyState,
+					Time = now,
+				});
+				while (route.Count > 96 || (route.Count > 1 && (now - route.Peek().Time).TotalSeconds > 12))
+					route.Dequeue();
+			}
+		}
+
+		private bool TryGetBotRoutePoint(GamePeer target, Vector3 botPosition, out BotRoutePoint point) {
+			point = null;
+			lock (botRouteLock) {
+				if (!botRoutes.TryGetValue(target, out var route) || route.Count < 2)
+					return false;
+
+				var points = route.ToArray();
+				var closestIndex = -1;
+				var closestDistance = 8f;
+				for (var i = 0; i < points.Length - 1; i++) {
+					var distance = Vector3.Distance(botPosition, points[i].Position);
+					if (distance < closestDistance) {
+						closestDistance = distance;
+						closestIndex = i;
+					}
+				}
+				if (closestIndex < 0)
+					return false;
+
+				point = points[closestIndex + 1];
+				return true;
+			}
+		}
+
+		private void ClearBotRoute(GamePeer peer) {
+			lock (botRouteLock)
+				botRoutes.Remove(peer);
+		}
 
 		public int BotCount { get { lock (peers) { return players.Count(p => p.IsBot); } } }
 
@@ -240,8 +308,6 @@ namespace NekoNexus.Realtime.Server.Game {
 		private class BotBrain {
 			private const float MeleeRange = 2.5f;
 			private const float DefaultRangedRange = 16f;
-			private const float MoveSpeed = 4.5f; // world units/sec, approximate human run speed
-			private const float MaxVerticalSpeed = 6f; // caps climb/fall rate so bots don't fly straight at an elevated point
 
 			// Per-weapon-class effective engagement range. UberStrikeItemWeaponView.CombatRange is
 			// NOT usable for this - in the shop data it's just an alias of SplashRadius (only ever
@@ -261,10 +327,8 @@ namespace NekoNexus.Realtime.Server.Game {
 			private readonly GamePeer Bot;
 			private readonly System.Random Rand;
 
-			private Vector3 waypoint;
-			private bool hasWaypoint;
-			private DateTime nextWaypointTime = DateTime.MinValue;
 			private DateTime nextFireTime = DateTime.MinValue;
+			private byte previousMovementState;
 
 			public BotBrain(BaseGameRoom room, GamePeer bot, int seed) {
 				Room = room;
@@ -296,14 +360,8 @@ namespace NekoNexus.Realtime.Server.Game {
 					return;
 				}
 
-				// Reset to "standing still" every tick before Engage/Patrol decide otherwise. The
-				// client's AvatarAnimationController drives the walk/run/idle blend tree entirely off
-				// Movement.Velocity/KeyState (see AvatarAnimationController.Update: WalkingSpeed comes
-				// from Velocity magnitude, IsWalking from KeyState) - bots never set either, so no
-				// matter how Position moved, clients rendered them sliding through a static idle pose
-				// instead of playing a walk animation. Setting these every tick (MoveToward overwrites
-				// them below when the bot actually moves) fixes that, and Grounded keeps the "falling/
-				// airborne" animation from kicking in since bots have no real ground/gravity simulation.
+				// Route samples come from actual players, so grounded, jump, and water movement can
+				// be replayed on every map without the server inventing unsupported vertical motion.
 				actor.Movement.Velocity = Vector3.zero;
 				actor.Movement.KeyState = (byte)KeyState.Still;
 				actor.Movement.MovementState = (byte)MoveStates.Grounded;
@@ -313,7 +371,7 @@ namespace NekoNexus.Realtime.Server.Game {
 				if (target != null) {
 					Engage(actor, target);
 				} else {
-					Patrol(actor);
+					// Stay on a known server-approved surface when no recent player route is available.
 				}
 			}
 
@@ -348,7 +406,7 @@ namespace NekoNexus.Realtime.Server.Game {
 						continue;
 
 					var distance = Vector3.Distance(myPosition, other.Actor.Movement.Position);
-					if (distance < engageRange && distance < bestDistance) {
+					if (distance < Math.Max(80f, engageRange) && distance < bestDistance) {
 						bestDistance = distance;
 						best = other;
 					}
@@ -370,8 +428,8 @@ namespace NekoNexus.Realtime.Server.Game {
 				var range = GetWeaponRange(weapon);
 				var desiredRange = isMelee ? range * 0.5f : range * 0.65f;
 
-				if (distance > desiredRange + 0.5f) {
-					MoveToward(actor, targetPosition, distance - desiredRange);
+				if (distance > desiredRange + 0.5f && Room.TryGetBotRoutePoint(target, myPosition, out var routePoint)) {
+					FollowRoutePoint(actor, routePoint);
 				}
 
 				if (weapon == null || DateTime.UtcNow < nextFireTime)
@@ -383,13 +441,14 @@ namespace NekoNexus.Realtime.Server.Game {
 				if (distance > range)
 					return;
 
-				nextFireTime = DateTime.UtcNow.AddMilliseconds(Math.Max(150, weapon.RateOfFire));
+				// Bots should fire in deliberate bursts and miss often enough to feel human.
+				nextFireTime = DateTime.UtcNow.AddMilliseconds(Math.Max(650, weapon.RateOfFire) + Rand.Next(250, 701));
 
 				Room.SingleBulletFire(Bot);
 
 				// Simple accuracy model: closer shots land more often; there's always some chance
 				// to miss so bots aren't hitscan-perfect.
-				var hitChance = Math.Max(0.15, 0.9 - (distance / range) * 0.6);
+				var hitChance = Math.Max(0.08, 0.42 - (distance / range) * 0.28);
 				if (Rand.NextDouble() > hitChance)
 					return;
 
@@ -397,52 +456,24 @@ namespace NekoNexus.Realtime.Server.Game {
 				Room.DirectHitDamage(Bot, target.Actor.Cmid, (byte)bodyPart, 1);
 			}
 
-			private void Patrol(GameActor actor) {
-				var myPosition = (Vector3)actor.Movement.Position;
-
-				if (!hasWaypoint || DateTime.UtcNow >= nextWaypointTime || Vector3.Distance(myPosition, waypoint) < 1.5f) {
-					if (Room.SpawnPointManager.TryGet(actor.Team, out var spawn)) {
-						waypoint = spawn.Position;
-						hasWaypoint = true;
-					}
-
-					nextWaypointTime = DateTime.UtcNow.AddSeconds(Rand.Next(4, 9));
-				}
-
-				if (hasWaypoint) {
-					MoveToward(actor, waypoint, MoveSpeed / BaseGameRoom.TICK_TRATE);
-				}
-			}
-
-			private void MoveToward(GameActor actor, Vector3 destination, float maxDistanceDelta) {
+			private void FollowRoutePoint(GameActor actor, BotRoutePoint point) {
 				var current = (Vector3)actor.Movement.Position;
-
-				// Horizontal and vertical movement are stepped separately, each capped to a
-				// walking-speed rate. A straight Vector3.MoveTowards over all 3 axes at once
-				// would fly the bot in a dead-straight diagonal line toward any elevated point
-				// (a platform, a hill, across a gap) - capping the vertical rate keeps the bot's
-				// climb/descent looking like it's on the ground instead of airborne.
-				var horizontalStep = Math.Max(0, Math.Min(maxDistanceDelta, MoveSpeed / BaseGameRoom.TICK_TRATE));
-				var currentXZ = new Vector3(current.x, 0, current.z);
-				var destinationXZ = new Vector3(destination.x, 0, destination.z);
-				var nextXZ = Vector3.MoveTowards(currentXZ, destinationXZ, horizontalStep);
-
-				var verticalDelta = destination.y - current.y;
-				var verticalStep = MaxVerticalSpeed / BaseGameRoom.TICK_TRATE;
-				var nextY = Math.Abs(verticalDelta) <= verticalStep ? destination.y : current.y + Math.Sign(verticalDelta) * verticalStep;
-
-				var next = new Vector3(nextXZ.x, nextY, nextXZ.z);
+				var next = Vector3.MoveTowards(current, point.Position, 7.6f / BaseGameRoom.TICK_TRATE);
 
 				var direction = next - current;
 				if (direction.sqrMagnitude > 0.0001f) {
 					FaceDirection(actor, direction);
-
-					// Velocity/KeyState drive the client's walk animation (see the comment in Tick) -
-					// without this the bot's position updates but its model plays an idle/floating pose.
-					actor.Movement.Velocity = direction * BaseGameRoom.TICK_TRATE;
-					actor.Movement.KeyState = (byte)KeyState.Forward;
+					actor.Movement.Velocity = (next - current) * BaseGameRoom.TICK_TRATE;
+					actor.Movement.KeyState = point.KeyState;
 				}
 
+				// Never copy the synthetic Flying flag. Jump/swim/wade states are copied from
+				// real movement samples, and the jump event drives the normal client animation.
+				var safeState = (byte)(point.MovementState & ~(byte)MoveStates.Flying);
+				if ((((MoveStates)safeState & MoveStates.Jumping) != 0) && (((MoveStates)previousMovementState & MoveStates.Jumping) == 0))
+					Room.Jump(Bot, next);
+				previousMovementState = safeState;
+				actor.Movement.MovementState = safeState;
 				actor.Movement.Position = next;
 				actor.UpdatePosition = true;
 			}
