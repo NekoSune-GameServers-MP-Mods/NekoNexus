@@ -1,5 +1,5 @@
-version: 2.1.2.28
-build: 4.7.20-261016-1639
+version: 2.1.2.29
+build: 4.7.20-261016-1716
 channel: beta
 platforms:
   win:
@@ -49,10 +49,10 @@ platforms:
         description: ""
         localPath: UberStrike_Data/Managed
         remotePath: beta/universal/UberStrike_Data/Managed
-        filesize: 108544
-        md5sum: 7e530baf284464d338b1a41cb97e0f7f
-        sha256: 28e56da111654e0ab255b6f0208fdde78ae3de44b74600a4d2ae12562617b406
-        sha512: 688ad3dbaeda71b3ca919fa1c03559d6f722d12514741ed4bb779658813582479e432ca01efded228eed900685118ebdaacf17566b391b36d05ab707358fc863
+        filesize: 111104
+        md5sum: 17f4fa5ef47b02e30828edd6dc407423
+        sha256: 8d85a59d6f7f607433275a8e11f113e74022af6d2e1a83f2739b48ae47e898d4
+        sha512: 626de2a88f623a8f90248c71f16c9c6044c320f42dd9ffdb8d1934aa5de9a1cbe29f94b8d7cf95ad413769822ccfcedc0f697b809e1401b448674c9de9b7c9e5
         optional: false
       - filename: YamlDotNet.dll
         description: ""
