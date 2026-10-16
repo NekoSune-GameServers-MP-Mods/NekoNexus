@@ -29,7 +29,14 @@ export async function initDatabase(cfg: AdminConfig) {
   // untouched on subsequent starts.
   await models.AdminUser.sync();
   await models.CreditPackage.sync({ alter: true });
-  await models.PaymentOrder.sync({ alter: true });
+
+  // Do not use alter-sync for PaymentOrders: ExternalId is unique, and Sequelize v6 can create
+  // a new duplicate unique index each time alter-sync runs against MySQL/MariaDB. After enough
+  // restarts this reaches the 64-index limit and prevents the admin service from starting.
+  // Plain sync still creates the correctly defined table on fresh installs without modifying
+  // an existing table on every startup. Use an explicit migration for future schema changes.
+  await models.PaymentOrder.sync();
+
   await models.PlayerReport.sync({ alter: true }); // player-report inbox (owned by the admin app)
   try {
     await models.PhotonServer.sync({ alter: true });
