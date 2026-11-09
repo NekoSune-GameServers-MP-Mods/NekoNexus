@@ -143,7 +143,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 						PlayerLimit = Math.Max(2, (int)meta.MaxPlayers),
 						TimeLimit = Math.Max(60, meta.TimeLimitSeconds),
 						KillLimit = Math.Max(1, meta.SplatLimit),
-						GameFlags = meta.GameFlags & 0x1F,
+						GameFlags = ToPcFlags(meta.GameFlags),
 						LevelMin = meta.LevelMin,
 						LevelMax = meta.LevelMax,
 					};
@@ -229,6 +229,28 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		/// <summary>Call a method of the phone's game-mode class.</summary>
 		internal void SendGameModeCall(short networkId, byte methodId, object[] args) => SendNetworkCall(networkId, methodId, args);
 
+		// Game flag bits differ between the versions:
+		//   PC 4.7.1: LowGravity 1, NoArmor 2, QuickSwitch 4, MeleeOnly 8
+		//   4.3.10:   LowGravity 1, Instakill 2, NinjaArena 4, SniperArena 8, CannonArena 16
+		// Passing the bits through showed a PC Quick Switch game as Ninja Arena on Android (and would
+		// force the Ninja Arena melee loadout). Only the equivalents are mapped; NinjaArena is melee only.
+		private const int PcLowGravity = 1, PcMeleeOnly = 8;
+		private const int LegacyLowGravity = 1, LegacyNinjaArena = 4;
+
+		internal static int ToLegacyFlags(int pcFlags) {
+			var flags = 0;
+			if ((pcFlags & PcLowGravity) != 0) flags |= LegacyLowGravity;
+			if ((pcFlags & PcMeleeOnly) != 0) flags |= LegacyNinjaArena;
+			return flags;
+		}
+
+		private static int ToPcFlags(int legacyFlags) {
+			var flags = 0;
+			if ((legacyFlags & LegacyLowGravity) != 0) flags |= PcLowGravity;
+			if ((legacyFlags & LegacyNinjaArena) != 0) flags |= PcMeleeOnly;
+			return flags;
+		}
+
 		private static GameModeType ToPcGameMode(short legacyMode) {
 			switch (legacyMode) {
 				case LegacyGameMetaData.ModeDeathMatch: return GameModeType.DeathMatch;
@@ -290,9 +312,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
 					TimeLimitSeconds = pc.TimeLimit,
 					SplatLimit = pc.KillLimit,
 					GameMode = mode,
-					GameFlags = pc.GameFlags & 0x1F, // LowGravity .. CannonArena exist in 4.3.10
-					LevelMin = ClampByte(pc.LevelMin),
-					LevelMax = ClampByte(pc.LevelMax),
+					GameFlags = ToLegacyFlags(pc.GameFlags),
+					// PC uses 0 for "no limit"; 4.3.10 treats 0..255 as unrestricted and shows any
+					// other range as a level restriction ("Player Level 0 Restriction").
+					LevelMin = pc.LevelMin <= 1 ? (byte)0 : ClampByte(pc.LevelMin),
+					LevelMax = pc.LevelMax == 0 ? byte.MaxValue : ClampByte(pc.LevelMax),
 					PlayersInGame = pc.ConnectedPlayers,
 				});
 			}

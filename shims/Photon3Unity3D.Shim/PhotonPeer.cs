@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
@@ -100,26 +100,40 @@ namespace ExitGames.Client.Photon {
 			return _server != null;
 		}
 
+		// Photon confirms a local Disconnect() with OnStatusChanged(StatusCode.Disconnect) on the next
+		// dispatch, and UberStrike waits for it: 4.3.10's PhotonPeerListener stays in STATE_DISCONNECTING
+		// until then and refuses every reconnect ("Please first stop Connection before reconnecting!").
+		// Stopping the socket here means LiteNetLib never reports the disconnect itself, so queue it.
+		private bool _localDisconnectPending;
+
 		public void Disconnect() {
+			var wasActive = _server != null || _state != PeerStateValue.Disconnected;
 			if (_server != null) { _net.DisconnectPeer(_server); _server = null; }
 			_state = PeerStateValue.Disconnected;
 			_net.Stop();
+			if (wasActive) _localDisconnectPending = true;
+		}
+
+		private void DeliverPendingDisconnect() {
+			if (!_localDisconnectPending) return;
+			_localDisconnectPending = false;
+			_listener.OnStatusChanged(StatusCode.Disconnect);
 		}
 
 		public void StopThread() => _net.Stop();
 
 		// Pumps the transport; UberStrike calls this each frame.
-		public void Service() => _net.PollEvents();
+		public void Service() { _net.PollEvents(); DeliverPendingDisconnect(); }
 
 		// Photon returns false once nothing is left to send/dispatch, and game code loops on it:
 		// 4.3.10's PhotonPeerListener.Update() does `while (peer.DispatchIncomingCommands()) {}`.
 		// PollEvents() already delivers everything queued in one call, so always report "done";
 		// returning true froze the Android client's main thread as soon as it connected.
-		public bool SendOutgoingCommands() { _net.PollEvents(); return false; }
+		public bool SendOutgoingCommands() { _net.PollEvents(); DeliverPendingDisconnect(); return false; }
 
 		public bool SendAcksOnly() { /* LiteNetLib auto-acks */ return true; }
 
-		public bool DispatchIncomingCommands() { _net.PollEvents(); return false; }
+		public bool DispatchIncomingCommands() { _net.PollEvents(); DeliverPendingDisconnect(); return false; }
 
 		// Photon uses this to (re)sync the server clock; the game calls it on connect and at match
 		// start. We issue a round-trip time-sync so ServerTimeInMilliSeconds tracks the server's
