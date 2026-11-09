@@ -17,6 +17,8 @@
 
 import { ApiVersion } from '@/utils/enums';
 import { Clan, ClanMember, GameSession, GroupInvitation, UserAccount } from '@festivaldev/nekonexus-models';
+import { Op } from 'sequelize';
+import V2ClanWebService from '../v2/ClanWebService';
 import { ClanView, GroupInvitationView } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
 import {
   BooleanProxy,
@@ -25,6 +27,16 @@ import {
   StringProxy,
 } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization';
 import {
+  ClanCreationReturnViewProxy as V2ClanCreationReturnViewProxy,
+  ClanRequestAcceptViewProxy as V2ClanRequestAcceptViewProxy,
+  ClanRequestDeclineViewProxy as V2ClanRequestDeclineViewProxy,
+  GroupCreationViewProxy as V2GroupCreationViewProxy,
+  MemberPositionUpdateViewProxy as V2MemberPositionUpdateViewProxy,
+} from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization';
+import {
+  ClanCreationReturnViewProxy,
+  ClanRequestAcceptViewProxy,
+  ClanRequestDeclineViewProxy,
   GroupCreationViewProxy,
   GroupInvitationViewProxy,
   ClanViewProxy,
@@ -40,6 +52,53 @@ export default class ClanWebService extends BaseWebService {
     return ApiVersion.Legacy102;
   }
   // protected static get ServiceInterface(): string { return 'IClanWebService'; }
+
+  // ---------------------------------------------------------------- 1.0.2 -> 2.0 bridge
+  // 4.3.10 identifies the player by CMID; the 2.0 handlers take the player's session token.
+  // Look up the session the 1.0.2 login created and run the 2.0 logic with it, so both client
+  // versions share one implementation (and the same realtime notifications).
+  private static async sessionTokenFor(cmid: number): Promise<string> {
+    const session = await GameSession.findOne({
+      where: { Cmid: cmid, ExpireTime: { [Op.gt]: new Date() } },
+      order: [['ExpireTime', 'DESC']],
+    });
+    return session?.SessionId ?? '';
+  }
+
+  /** Run a 2.0 ClanWebService handler with plain (unencrypted) input; returns its plain output. */
+  private static async callV2(method: string, write: (input: number[]) => void): Promise<number[]> {
+    const input: number[] = [];
+    write(input);
+    const output = await (V2ClanWebService as any)[method](input, []);
+    return output ?? [];
+  }
+
+  /** Decrypt/encrypt and error handling shared by the bridged 1.0.2 methods. */
+  private static async bridge(
+    name: string,
+    data: number[],
+    outputStream: number[],
+    body: (bytes: number[], out: number[]) => Promise<void>,
+  ): Promise<number[] | null> {
+    const isEncrypted = this.isEncrypted(data);
+    const bytes = isEncrypted
+      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
+      : data;
+    try {
+      await body(bytes, outputStream);
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
+    } catch (error) {
+      this.handleEndpointError(name, error);
+    }
+    return null;
+  }
+
+  /** Copy a 2.0 int result (ClanActionResultCode / ClanCreationResultCode, same values in 4.3.10). */
+  private static passInt(out: number[], v2Output: number[]): void {
+    Int32Proxy.Serialize(out, v2Output.length >= 4 ? Int32Proxy.Deserialize([...v2Output]) : 1);
+  }
 
   static async IsMemberPartOfGroup(data: number[], outputStream: number[]): Promise<number[] | null> {
     const isEncrypted = this.isEncrypted(data);
@@ -81,211 +140,112 @@ export default class ClanWebService extends BaseWebService {
   }
 
   static async IsMemberPartOfAnyGroup(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('IsMemberPartOfAnyGroup', data, outputStream, async (bytes, out) => {
       const cmuneId = Int32Proxy.Deserialize(bytes);
-      const applicationId = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('IsMemberPartOfAnyGroup', cmuneId, applicationId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('IsMemberPartOfAnyGroup', e);
-    }
-
-    return null;
+      Int32Proxy.Deserialize(bytes); // applicationId
+      BooleanProxy.Serialize(out, !!(await ClanMember.findOne({ where: { Cmid: cmuneId } })));
+    });
   }
 
   static async GetClan(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('GetClan', data, outputStream, async (bytes, out) => {
       const groupId = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('GetClan', groupId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetClan', e);
-    }
-
-    return null;
+      const clan = await Clan.findOne({
+        where: { GroupId: groupId },
+        include: [{ model: ClanMember, as: 'Members', required: false }],
+      });
+      if (clan) ClanViewProxy.Serialize(out, clan.get({ plain: true }) as ClanView);
+    });
   }
 
   static async UpdateMemberPosition(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const updateMemberPositionData = MemberPositionUpdateViewProxy.Deserialize(bytes);
-
-      this.debugEndpoint('UpdateMemberPosition', updateMemberPositionData);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('UpdateMemberPosition', e);
-    }
-
-    return null;
+    return this.bridge('UpdateMemberPosition', data, outputStream, async (bytes, out) => {
+      const view = MemberPositionUpdateViewProxy.Deserialize(bytes);
+      view.AuthToken = await this.sessionTokenFor(view.CmidMakingAction);
+      this.passInt(out, await this.callV2('UpdateMemberPosition', (i) => V2MemberPositionUpdateViewProxy.Serialize(i, view)));
+    });
   }
 
   static async InviteMemberToJoinAGroup(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('InviteMemberToJoinAGroup', data, outputStream, async (bytes, out) => {
       const clanId = Int32Proxy.Deserialize(bytes);
       const inviterCmid = Int32Proxy.Deserialize(bytes);
       const inviteeCmid = Int32Proxy.Deserialize(bytes);
       const message = StringProxy.Deserialize(bytes);
-
-      this.debugEndpoint('InviteMemberToJoinAGroup', clanId, inviterCmid, inviteeCmid, message);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('InviteMemberToJoinAGroup', e);
-    }
-
-    return null;
+      const token = await this.sessionTokenFor(inviterCmid);
+      this.passInt(out, await this.callV2('InviteMemberToJoinAGroup', (i) => {
+        Int32Proxy.Serialize(i, clanId);
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, inviteeCmid);
+        StringProxy.Serialize(i, message);
+      }));
+    });
   }
 
   static async AcceptClanInvitation(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('AcceptClanInvitation', data, outputStream, async (bytes, out) => {
       const clanInvitationId = Int32Proxy.Deserialize(bytes);
-      const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('AcceptClanInvitation', clanInvitationId, cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('AcceptClanInvitation', e);
-    }
-
-    return null;
+      const token = await this.sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      const v2 = await this.callV2('AcceptClanInvitation', (i) => {
+        Int32Proxy.Serialize(i, clanInvitationId);
+        StringProxy.Serialize(i, token);
+      });
+      // ActionResult 1 (error) when the 2.0 handler produced nothing (bad id / no session).
+      const view = v2.length
+        ? V2ClanRequestAcceptViewProxy.Deserialize([...v2])
+        : { ActionResult: 1, ClanRequestId: clanInvitationId, ClanView: null };
+      ClanRequestAcceptViewProxy.Serialize(out, view as any);
+    });
   }
 
   static async DeclineClanInvitation(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('DeclineClanInvitation', data, outputStream, async (bytes, out) => {
       const clanInvitationId = Int32Proxy.Deserialize(bytes);
-      const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('DeclineClanInvitation', clanInvitationId, cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('DeclineClanInvitation', e);
-    }
-
-    return null;
+      const token = await this.sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      const v2 = await this.callV2('DeclineClanInvitation', (i) => {
+        Int32Proxy.Serialize(i, clanInvitationId);
+        StringProxy.Serialize(i, token);
+      });
+      const view = v2.length
+        ? V2ClanRequestDeclineViewProxy.Deserialize([...v2])
+        : { ActionResult: 1, ClanRequestId: clanInvitationId };
+      ClanRequestDeclineViewProxy.Serialize(out, view as any);
+    });
   }
 
   static async KickMemberFromClan(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('KickMemberFromClan', data, outputStream, async (bytes, out) => {
       const groupId = Int32Proxy.Deserialize(bytes);
-      const cmidTakingAction = Int32Proxy.Deserialize(bytes);
+      const token = await this.sessionTokenFor(Int32Proxy.Deserialize(bytes));
       const cmidToKick = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('KickMemberFromClan', groupId, cmidTakingAction, cmidToKick);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('KickMemberFromClan', e);
-    }
-
-    return null;
+      this.passInt(out, await this.callV2('KickMemberFromClan', (i) => {
+        Int32Proxy.Serialize(i, groupId);
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, cmidToKick);
+      }));
+    });
   }
 
   static async DisbandGroup(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('DisbandGroup', data, outputStream, async (bytes, out) => {
       const groupId = Int32Proxy.Deserialize(bytes);
-      const cmidTakingAction = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('DisbandGroup', groupId, cmidTakingAction);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('DisbandGroup', e);
-    }
-
-    return null;
+      const token = await this.sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      this.passInt(out, await this.callV2('DisbandGroup', (i) => {
+        Int32Proxy.Serialize(i, groupId);
+        StringProxy.Serialize(i, token);
+      }));
+    });
   }
 
   static async LeaveAClan(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('LeaveAClan', data, outputStream, async (bytes, out) => {
       const groupId = Int32Proxy.Deserialize(bytes);
-      const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('LeaveAClan', groupId, cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('LeaveAClan', e);
-    }
-
-    return null;
+      const token = await this.sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      this.passInt(out, await this.callV2('LeaveAClan', (i) => {
+        Int32Proxy.Serialize(i, groupId);
+        StringProxy.Serialize(i, token);
+      }));
+    });
   }
 
   static async GetMyClanId(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -353,26 +313,14 @@ export default class ClanWebService extends BaseWebService {
   }
 
   static async CancelInvitation(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('CancelInvitation', data, outputStream, async (bytes, out) => {
       const groupInvitationId = Int32Proxy.Deserialize(bytes);
-      const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('CancelInvitation', groupInvitationId, cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('CancelInvitation', e);
-    }
-
-    return null;
+      const token = await this.sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      this.passInt(out, await this.callV2('CancelInvitation', (i) => {
+        Int32Proxy.Serialize(i, groupInvitationId);
+        StringProxy.Serialize(i, token);
+      }));
+    });
   }
 
   static async GetAllGroupInvitations(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -443,90 +391,40 @@ export default class ClanWebService extends BaseWebService {
   }
 
   static async CreateClan(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const createClanData = GroupCreationViewProxy.Deserialize(bytes);
-
-      this.debugEndpoint('CreateClan', createClanData);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('CreateClan', e);
-    }
-
-    return null;
+    return this.bridge('CreateClan', data, outputStream, async (bytes, out) => {
+      const view = GroupCreationViewProxy.Deserialize(bytes);
+      view.AuthToken = await this.sessionTokenFor(view.Cmid);
+      const v2 = await this.callV2('CreateClan', (i) => V2GroupCreationViewProxy.Serialize(i, view));
+      const result = v2.length ? V2ClanCreationReturnViewProxy.Deserialize([...v2]) : { ResultCode: 1, ClanView: null };
+      ClanCreationReturnViewProxy.Serialize(out, result as any);
+    });
   }
 
   static async TransferOwnership(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return this.bridge('TransferOwnership', data, outputStream, async (bytes, out) => {
       const groupId = Int32Proxy.Deserialize(bytes);
-      const previousLeaderId = Int32Proxy.Deserialize(bytes);
-      const newLeaderId = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('TransferOwnership', groupId, previousLeaderId, newLeaderId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('TransferOwnership', e);
-    }
-
-    return null;
+      const token = await this.sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      const newLeaderCmid = Int32Proxy.Deserialize(bytes);
+      this.passInt(out, await this.callV2('TransferOwnership', (i) => {
+        Int32Proxy.Serialize(i, groupId);
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, newLeaderCmid);
+      }));
+    });
   }
 
   static async CanOwnAClan(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('CanOwnAClan', cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('CanOwnAClan', e);
-    }
-
-    return null;
+    return this.bridge('CanOwnAClan', data, outputStream, async (bytes, out) => {
+      Int32Proxy.Deserialize(bytes); // cmid
+      // The real requirements (level, friends, license) are enforced by CreateClan, which
+      // returns the specific ClanCreationResultCode; report "allowed" here so the UI opens.
+      Int32Proxy.Serialize(out, 0);
+    });
   }
 
   static async test(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      this.debugEndpoint('test');
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('test', e);
-    }
-
-    return null;
+    return this.bridge('test', data, outputStream, async (_bytes, out) => {
+      Int32Proxy.Serialize(out, 0);
+    });
   }
 }

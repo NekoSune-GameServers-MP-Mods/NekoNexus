@@ -54,7 +54,7 @@ export default class PrivateMessageWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const messages = await PrivateMessage.findAll({
@@ -108,7 +108,7 @@ export default class PrivateMessageWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const messages = (
@@ -198,7 +198,7 @@ export default class PrivateMessageWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const message = await PrivateMessage.findOne({
@@ -251,7 +251,7 @@ export default class PrivateMessageWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const messages = await PrivateMessage.findAll({
@@ -303,7 +303,7 @@ export default class PrivateMessageWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const messages = await PrivateMessage.findAll({
@@ -347,7 +347,7 @@ export default class PrivateMessageWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const sender = await PublicProfile.findOne({ where: { Cmid: steamMember.Cmid } });

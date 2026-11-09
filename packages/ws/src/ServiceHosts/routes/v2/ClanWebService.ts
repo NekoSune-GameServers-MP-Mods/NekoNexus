@@ -99,7 +99,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const publicProfile = await PublicProfile.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -200,7 +200,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const groupInvitation = await GroupInvitation.findOne({ where: { GroupInvitationId: groupInvitationId } });
@@ -260,7 +260,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(createClanData.AuthToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const publicProfile = await PublicProfile.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -437,7 +437,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const groupInvitation = await GroupInvitation.findOne({ where: { GroupInvitationId: clanInvitationId } });
@@ -488,7 +488,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const clan = await Clan.findOne({
@@ -539,7 +539,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const groupInvitations = await GroupInvitation.findAll({ where: { InviteeCmid: steamMember.Cmid } });
@@ -575,7 +575,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const clans = await Clan.findAll({
@@ -620,7 +620,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const clans = await Clan.findAll({
@@ -667,7 +667,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const groupInvitations = await GroupInvitation.findAll({
@@ -708,7 +708,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const publicProfile = await PublicProfile.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -769,7 +769,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (!steamMember) {
           Int32Proxy.Serialize(outputStream, ClanActionResultCode.Error);
@@ -853,7 +853,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (!steamMember) {
           Int32Proxy.Serialize(outputStream, ClanActionResultCode.Error);
@@ -948,7 +948,7 @@ export default class ClanWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (!steamMember) {
           Int32Proxy.Serialize(outputStream, ClanActionResultCode.Error);
@@ -1052,7 +1052,7 @@ export default class ClanWebService extends BaseWebService {
         updateMemberPositionData.AuthToken,
       );
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (!steamMember) {
           Int32Proxy.Serialize(outputStream, ClanActionResultCode.Error);

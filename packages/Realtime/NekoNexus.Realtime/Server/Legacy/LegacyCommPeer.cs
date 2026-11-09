@@ -73,7 +73,14 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		public bool InLobby { get { lock (stateLock) return hasJoinedLobby; } }
 
 		/// <summary>Name as shown to everyone else.</summary>
-		public string DisplayName => (string.IsNullOrWhiteSpace(PlayerName) ? $"Player {Cmid}" : PlayerName) + AndroidSuffix;
+		/// <summary>Name for relayed chat: tagged, because Android chat reaches PC with CMID 0.</summary>
+		public string DisplayName => RosterName + AndroidSuffix;
+		/// <summary>Name for player lists: both clients already show an Android channel icon.</summary>
+		public string RosterName => string.IsNullOrWhiteSpace(PlayerName) ? $"Player {Cmid}" : PlayerName;
+
+		/// <summary>The comm lobby room (88). 4.3.10 shows a player as in game when CurrentRoom.Number != 88.</summary>
+		private const int CommLobbyRoomNumber = 88;
+		private static readonly LegacyRoomId LobbyRoom = new LegacyRoomId { Number = CommLobbyRoomNumber };
 
 		public LegacyCommPeer(InitRequest initRequest) : base(initRequest) {
 			lock (RegistryLock) ConnectedPeers.Add(this);
@@ -241,8 +248,9 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		public LegacySyncObject ToSyncObject() {
 			var sync = new LegacySyncObject { Id = ActorId };
 			sync[LegacyActorField.Cmid] = Cmid;
-			sync[LegacyActorField.PlayerName] = DisplayName;
+			sync[LegacyActorField.PlayerName] = RosterName;
 			sync[LegacyActorField.Channel] = ChannelValue;
+			sync[LegacyActorField.CurrentRoom] = LobbyRoom; // Android players can't be in a match yet
 			sync[LegacyActorField.AccessLevel] = (byte)MemberAccessLevel.Default;
 			return sync;
 		}
@@ -253,8 +261,27 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			sync[LegacyActorField.PlayerName] = pc.PlayerName ?? "";
 			if (!string.IsNullOrEmpty(pc.ClanTag)) sync[LegacyActorField.ClanTag] = pc.ClanTag;
 			sync[LegacyActorField.Channel] = (byte)pc.Channel;
+			sync[LegacyActorField.CurrentRoom] = ToLegacyRoom(pc.CurrentRoom);
 			sync[LegacyActorField.AccessLevel] = (byte)pc.AccessLevel;
 			return sync;
+		}
+
+		/// <summary>
+		/// PC CurrentRoom as a 4.3.10 CmuneRoomID. Without it the client's default (room 0) made every
+		/// player show as "in game" (CommActorInfo.IsInGame is CurrentRoom.Number != 88).
+		/// </summary>
+		private static LegacyRoomId ToLegacyRoom(GameRoom room) {
+			if (room == null || room.Number <= 0) return LobbyRoom;
+			var address = new byte[6];
+			var ip = room.Server?.IpAddress?.Split('.');
+			if (ip != null && ip.Length == 4) {
+				for (var k = 0; k < 4; k++) byte.TryParse(ip[k], out address[k]);
+			}
+			var port = room.Server?.Port ?? 0;
+			address[4] = (byte)(port & 0xFF);
+			address[5] = (byte)(port >> 8);
+			// Never report a real match as room 88, or it would read as "in the lobby".
+			return new LegacyRoomId { Number = room.Number == CommLobbyRoomNumber ? -room.Number : room.Number, Address = address };
 		}
 
 		private void SendFullPlayerList() {
@@ -369,7 +396,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				if (excludeCmids != null && excludeCmids.Contains(peer.Cmid)) continue;
 				result.Add(new CommActorInfo {
 					Cmid = peer.Cmid,
-					PlayerName = peer.DisplayName,
+					PlayerName = peer.RosterName,
 					Channel = ChannelType.Android,
 					AccessLevel = MemberAccessLevel.Default,
 				});

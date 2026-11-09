@@ -52,6 +52,7 @@ import {
   type UberStrikeItemWeaponView,
 } from '@festivaldev/uberstrike-js/UberStrike/Core/Models/Views';
 import {
+  BooleanProxy,
   EnumProxy,
   Int32Proxy,
   ListProxy,
@@ -67,6 +68,7 @@ import { UberstrikeItemType } from '@festivaldev/uberstrike-js/UberStrike/Core/T
 import moment from 'moment';
 import { Op } from 'sequelize';
 import BaseWebService from '../BaseWebService';
+import { bridge, callV2, sessionTokenFor } from './LegacyBridge';
 
 export default class ShopWebService extends BaseWebService {
   static get ServiceName(): string {
@@ -247,13 +249,16 @@ export default class ShopWebService extends BaseWebService {
                 } else if (XpPointsUtil.GetLevelForXp(playerStatistics!.Xp) < item.LevelLock) {
                   Int32Proxy.Serialize(outputStream, BuyItemResult.InvalidLevel);
                 } else {
+                  // Set when a check below fails: the item must then NOT be granted (previously it
+                  // was granted anyway - free items - and a second result code was written).
+                  let failed = false;
                   if (currencyType === UberStrikeCurrencyType.Credits) {
                     const price = item.Prices.find((_: ShopItemPrice) => _.Currency === UberStrikeCurrencyType.Credits);
 
                     if (!price) {
-                      Int32Proxy.Serialize(outputStream, BuyItemResult.IsNotForSale);
+                      Int32Proxy.Serialize(outputStream, BuyItemResult.IsNotForSale); failed = true;
                     } else if (memberWallet.Credits! < price.Price) {
-                      Int32Proxy.Serialize(outputStream, BuyItemResult.NotEnoughCurrency);
+                      Int32Proxy.Serialize(outputStream, BuyItemResult.NotEnoughCurrency); failed = true;
                     } else {
                       await memberWallet.update({
                         Credits: memberWallet.Credits! - price.Price,
@@ -272,12 +277,12 @@ export default class ShopWebService extends BaseWebService {
                     const price = item.Prices.find((_: ShopItemPrice) => _.Currency === UberStrikeCurrencyType.Points);
 
                     if (!price) {
-                      Int32Proxy.Serialize(outputStream, BuyItemResult.IsNotForSale);
+                      Int32Proxy.Serialize(outputStream, BuyItemResult.IsNotForSale); failed = true;
                     } else if (memberWallet.Points! < price.Price) {
-                      Int32Proxy.Serialize(outputStream, BuyItemResult.NotEnoughCurrency);
+                      Int32Proxy.Serialize(outputStream, BuyItemResult.NotEnoughCurrency); failed = true;
                     } else {
                       await memberWallet.update({
-                        Credits: memberWallet.Points! - price.Price,
+                        Points: memberWallet.Points! - price.Price,
                       });
 
                       await ItemTransaction.create({
@@ -293,7 +298,13 @@ export default class ShopWebService extends BaseWebService {
                     currencyType === UberStrikeCurrencyType.None ||
                     UberStrikeCurrencyType[currencyType] === undefined
                   ) {
-                    Int32Proxy.Serialize(outputStream, BuyItemResult.InvalidData);
+                    Int32Proxy.Serialize(outputStream, BuyItemResult.InvalidData); failed = true;
+                  }
+
+                  if (failed) {
+                    return isEncrypted
+                      ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+                      : outputStream;
                   }
 
                   let expirationDate;
@@ -341,40 +352,60 @@ export default class ShopWebService extends BaseWebService {
   }
 
   static async BuyPack(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    // Packs are quick/consumable items bought N uses at a time: the price row for the requested
+    // PackType holds the price and the number of uses (Amount), which is added to the item.
+    return bridge(this, 'BuyPack', data, outputStream, async (bytes, out) => {
       const itemId = Int32Proxy.Deserialize(bytes);
       const buyerCmid = Int32Proxy.Deserialize(bytes);
       const packType = EnumProxy.Deserialize<PackType>(bytes);
       const currencyType = EnumProxy.Deserialize<UberStrikeCurrencyType>(bytes);
-      const itemType = EnumProxy.Deserialize<UberstrikeItemType>(bytes);
-      const marketLocation = EnumProxy.Deserialize<BuyingLocationType>(bytes);
-      const recommendationType = EnumProxy.Deserialize<BuyingRecommendationType>(bytes);
 
-      this.debugEndpoint(
-        'BuyPack',
-        itemId,
-        buyerCmid,
-        packType,
-        currencyType,
-        itemType,
-        marketLocation,
-        recommendationType,
+      const wallet = await MemberWallet.findOne({ where: { Cmid: buyerCmid } });
+      const stats = await PlayerStatistics.findOne({ where: { Cmid: buyerCmid } });
+      if (!wallet || !stats) return Int32Proxy.Serialize(out, BuyItemResult.InvalidMember);
+
+      const include = [{ model: ShopItemPrice, as: 'Prices', required: false }];
+      const item: any =
+        (await ShopQuickItem.findOne({ where: { ID: itemId }, include })) ??
+        (await ShopFunctionalItem.findOne({ where: { ID: itemId }, include }));
+      if (!item) return Int32Proxy.Serialize(out, BuyItemResult.ItemNotFound);
+      if (!item.IsForSale) return Int32Proxy.Serialize(out, BuyItemResult.IsNotForSale);
+      if (XpPointsUtil.GetLevelForXp(stats.Xp) < item.LevelLock) return Int32Proxy.Serialize(out, BuyItemResult.InvalidLevel);
+
+      const price = (item.Prices ?? []).find(
+        (p: ShopItemPrice) => p.Currency === currencyType && (p.PackType ?? PackType.One) === packType,
       );
+      if (!price) return Int32Proxy.Serialize(out, BuyItemResult.IsNotForSale);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('BuyPack', e);
-    }
+      if (currencyType === UberStrikeCurrencyType.Credits) {
+        if (wallet.Credits! < price.Price!) return Int32Proxy.Serialize(out, BuyItemResult.NotEnoughCurrency);
+        await wallet.update({ Credits: wallet.Credits! - price.Price! });
+      } else if (currencyType === UberStrikeCurrencyType.Points) {
+        if (wallet.Points! < price.Price!) return Int32Proxy.Serialize(out, BuyItemResult.NotEnoughCurrency);
+        await wallet.update({ Points: wallet.Points! - price.Price! });
+      } else {
+        return Int32Proxy.Serialize(out, BuyItemResult.InvalidData);
+      }
 
-    return null;
+      await ItemTransaction.create({
+        Cmid: buyerCmid,
+        ItemId: itemId,
+        Duration: BuyingDurationType.Permanent,
+        ...(currencyType === UberStrikeCurrencyType.Credits ? { Credits: price.Price } : { Points: price.Price }),
+        WithdrawalDate: new Date(),
+        WithdrawalId: Math.randomInt(),
+      });
+
+      const uses = Math.max(1, price.Amount ?? 1);
+      const owned = await PlayerInventoryItem.findOne({ where: { Cmid: buyerCmid, ItemId: itemId } });
+      if (owned) {
+        // -1 means unlimited; keep it unlimited, otherwise add the pack's uses.
+        if (owned.AmountRemaining !== -1) await owned.update({ AmountRemaining: (owned.AmountRemaining ?? 0) + uses });
+      } else {
+        await PlayerInventoryItem.create({ Cmid: buyerCmid, ItemId: itemId, AmountRemaining: uses, ExpirationDate: null });
+      }
+      Int32Proxy.Serialize(out, BuyItemResult.OK);
+    });
   }
 
   static async GetBundles(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -413,52 +444,28 @@ export default class ShopWebService extends BaseWebService {
   }
 
   static async BuyBundle(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const cmid = Int32Proxy.Deserialize(bytes);
-      const bundleId = Int32Proxy.Deserialize(bytes);
-      const channel = EnumProxy.Deserialize<ChannelType>(bytes);
-      const hashedReceipt = StringProxy.Deserialize(bytes);
-      const applicationId = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('BuyBundle', cmid, bundleId, channel, hashedReceipt, applicationId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('BuyBundle', e);
-    }
-
-    return null;
+    // Real-money bundles bought through the Android store: the receipt cannot be verified by
+    // this server (no Google Play billing integration), so the purchase is refused. Credits can
+    // be bought through the website store (NekoPay) and are shared with this account.
+    return bridge(this, 'BuyBundle', data, outputStream, async (_bytes, out) => {
+      BooleanProxy.Serialize(out, false);
+    });
   }
 
   static async UseConsumableItem(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return bridge(this, 'UseConsumableItem', data, outputStream, async (bytes, out) => {
       const cmid = Int32Proxy.Deserialize(bytes);
       const itemId = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('UseConsumableItem', cmid, itemId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('UseConsumableItem', e);
-    }
-
-    return null;
+      const owned = await PlayerInventoryItem.findOne({ where: { Cmid: cmid, ItemId: itemId } });
+      let ok = false;
+      if (owned && owned.AmountRemaining === -1) {
+        ok = true; // unlimited
+      } else if (owned && (owned.AmountRemaining ?? 0) > 0) {
+        await owned.update({ AmountRemaining: owned.AmountRemaining! - 1 });
+        ok = true;
+      }
+      BooleanProxy.Serialize(out, ok);
+    });
   }
 
   static async GetAllMysteryBoxs_1(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -506,49 +513,16 @@ export default class ShopWebService extends BaseWebService {
   }
 
   static async GetMysteryBox(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const mysteryBoxId = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('GetMysteryBox', mysteryBoxId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetMysteryBox', e);
-    }
-
-    return null;
+    // No mystery boxes are configured (GetAllMysteryBoxs returns none); answer with null.
+    return bridge(this, 'GetMysteryBox', data, outputStream, async (_bytes, out) => {
+      MysteryBoxUnityViewProxy.Serialize(out, null as any);
+    });
   }
 
   static async RollMysteryBox(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const cmid = Int32Proxy.Deserialize(bytes);
-      const mysteryBoxId = Int32Proxy.Deserialize(bytes);
-      const channel = EnumProxy.Deserialize<ChannelType>(bytes);
-
-      this.debugEndpoint('RollMysteryBox', cmid, mysteryBoxId, channel);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('RollMysteryBox', e);
-    }
-
-    return null;
+    return bridge(this, 'RollMysteryBox', data, outputStream, async (_bytes, out) => {
+      Int32Proxy.Serialize(out, 0); // empty List<MysteryBoxWonItemUnityView>
+    });
   }
 
   static async GetAllLuckyDraws_1(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -596,48 +570,15 @@ export default class ShopWebService extends BaseWebService {
   }
 
   static async GetLuckyDraw(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const luckyDrawId = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('GetLuckyDraw', luckyDrawId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetLuckyDraw', e);
-    }
-
-    return null;
+    // No lucky draws are configured (GetAllLuckyDraws returns none); answer with null.
+    return bridge(this, 'GetLuckyDraw', data, outputStream, async (_bytes, out) => {
+      LuckyDrawUnityViewProxy.Serialize(out, null as any);
+    });
   }
 
   static async RollLuckyDraw(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const cmid = Int32Proxy.Deserialize(bytes);
-      const luckDrawId = Int32Proxy.Deserialize(bytes);
-      const channel = EnumProxy.Deserialize<ChannelType>(bytes);
-
-      this.debugEndpoint('RollLuckyDraw', cmid, luckDrawId, channel);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('RollLuckyDraw', e);
-    }
-
-    return null;
+    return bridge(this, 'RollLuckyDraw', data, outputStream, async (_bytes, out) => {
+      Int32Proxy.Serialize(out, 0); // no item won
+    });
   }
 }

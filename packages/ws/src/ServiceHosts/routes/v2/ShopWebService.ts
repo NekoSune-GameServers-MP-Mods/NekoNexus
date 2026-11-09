@@ -116,7 +116,7 @@ export default class ShopWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const publicProfile = await PublicProfile.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -246,7 +246,7 @@ export default class ShopWebService extends BaseWebService {
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
 
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (!steamMember) {
           Int32Proxy.Serialize(outputStream, BuyItemResult.InvalidMember);

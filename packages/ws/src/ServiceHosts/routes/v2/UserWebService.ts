@@ -96,7 +96,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const publicProfile = await PublicProfile.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -156,7 +156,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const memberWallet = await MemberWallet.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -204,7 +204,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const memberWallet = await MemberWallet.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -288,7 +288,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const currencyDeposits = await CurrencyDeposit.findAll({
@@ -335,7 +335,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const playerInventoryItems = await PlayerInventoryItem.findAll({
@@ -379,7 +379,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const itemTransactions = await ItemTransaction.findAll({
@@ -427,7 +427,7 @@ export default class UserWebService extends BaseWebService {
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
 
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           let playerLoadout = await PlayerLoadout.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -477,7 +477,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const publicProfile = await PublicProfile.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -572,7 +572,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const memberWallet = await MemberWallet.findOne({ where: { Cmid: steamMember.Cmid } });
@@ -615,7 +615,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (steamMember) {
           const pointDeposits = await PointDeposit.findAll({
@@ -686,7 +686,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (!steamMember) {
           EnumProxy.Serialize<MemberOperationResult>(outputStream, MemberOperationResult.MemberNotFound);
@@ -753,7 +753,7 @@ export default class UserWebService extends BaseWebService {
 
       const session = await NekoNexusService.Instance.SessionManager.findSessionForSteamUser(authToken);
       if (session) {
-        const steamMember = await session.SteamMember;
+        const steamMember = (await session.SteamMember) ?? { Cmid: session.Cmid as number }; // email/Android accounts have no SteamMember
 
         if (!steamMember) {
           EnumProxy.Serialize<MemberOperationResult>(outputStream, MemberOperationResult.MemberNotFound);

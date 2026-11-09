@@ -19,7 +19,13 @@ import { ApiVersion } from '@/utils/enums';
 import { PrivateMessage, PublicProfile, UserAccount } from '@festivaldev/nekonexus-models';
 import { MessageThreadView } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
 import { Int32Proxy, ListProxy, StringProxy } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization';
-import { MessageThreadViewProxy } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization/Legacy';
+import {
+  MessageThreadViewProxy,
+  PrivateMessageViewProxy,
+} from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization/Legacy';
+import { PrivateMessageViewProxy as V2PrivateMessageViewProxy } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization';
+import V2PrivateMessageWebService from '../v2/PrivateMessageWebService';
+import { bridge, callV2, sessionTokenFor } from './LegacyBridge';
 import { Op } from 'sequelize';
 import BaseWebService from '../BaseWebService';
 
@@ -33,25 +39,14 @@ export default class PrivateMessageWebService extends BaseWebService {
   // protected static get ServiceInterface(): string { return 'IPrivateMessageWebServiceContract'; }
 
   static async GetAllMessageThreadsForUser_1(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    // Same as the paged variant, first page.
+    return bridge(this, 'GetAllMessageThreadsForUser_1', data, outputStream, async (bytes, out) => {
       const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('GetAllMessageThreadsForUser_1', cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetAllMessageThreadsForUser_1', e);
-    }
-
-    return null;
+      const input: number[] = [];
+      Int32Proxy.Serialize(input, cmid);
+      Int32Proxy.Serialize(input, 1);
+      out.push(...((await this.GetAllMessageThreadsForUser_2(input, [])) ?? []));
+    });
   }
 
   static async GetAllMessageThreadsForUser_2(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -135,119 +130,67 @@ export default class PrivateMessageWebService extends BaseWebService {
   }
 
   static async GetThreadMessages(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const threadViewerCmid = Int32Proxy.Deserialize(bytes);
+    return bridge(this, 'GetThreadMessages', data, outputStream, async (bytes, out) => {
+      const token = await sessionTokenFor(Int32Proxy.Deserialize(bytes));
       const otherCmid = Int32Proxy.Deserialize(bytes);
       const pageNumber = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('GetThreadMessages', threadViewerCmid, otherCmid, pageNumber);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetThreadMessages', e);
-    }
-
-    return null;
+      const v2 = await callV2(V2PrivateMessageWebService, 'GetThreadMessages', (i) => {
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, otherCmid);
+        Int32Proxy.Serialize(i, pageNumber);
+      });
+      const messages = v2.length ? ListProxy.Deserialize([...v2], V2PrivateMessageViewProxy.Deserialize) : [];
+      ListProxy.Serialize(out, messages, PrivateMessageViewProxy.Serialize);
+    });
   }
 
   static async SendMessage(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const senderCmid = Int32Proxy.Deserialize(bytes);
+    // The 2.0 handler stores the mail and pings the receiver's client (PC and Android) to refresh.
+    return bridge(this, 'SendMessage', data, outputStream, async (bytes, out) => {
+      const token = await sessionTokenFor(Int32Proxy.Deserialize(bytes));
       const receiverCmid = Int32Proxy.Deserialize(bytes);
       const content = StringProxy.Deserialize(bytes);
-
-      this.debugEndpoint('SendMessage', senderCmid, receiverCmid, content);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('SendMessage', e);
-    }
-
-    return null;
+      const v2 = await callV2(V2PrivateMessageWebService, 'SendMessage', (i) => {
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, receiverCmid);
+        StringProxy.Serialize(i, content);
+      });
+      PrivateMessageViewProxy.Serialize(out, (v2.length ? V2PrivateMessageViewProxy.Deserialize([...v2]) : null) as any);
+    });
   }
 
   static async GetMessageWithId(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
+    return bridge(this, 'GetMessageWithId', data, outputStream, async (bytes, out) => {
       const messageId = Int32Proxy.Deserialize(bytes);
-      const requesterCmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('GetMessageWithId', messageId, requesterCmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetMessageWithId', e);
-    }
-
-    return null;
+      const token = await sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      const v2 = await callV2(V2PrivateMessageWebService, 'GetMessageWithIdForCmid', (i) => {
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, messageId);
+      });
+      PrivateMessageViewProxy.Serialize(out, (v2.length ? V2PrivateMessageViewProxy.Deserialize([...v2]) : null) as any);
+    });
   }
 
   static async MarkThreadAsRead(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const threadViewerCmid = Int32Proxy.Deserialize(bytes);
+    // 4.3.10 expects an empty reply.
+    return bridge(this, 'MarkThreadAsRead', data, outputStream, async (bytes) => {
+      const token = await sessionTokenFor(Int32Proxy.Deserialize(bytes));
       const otherCmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('MarkThreadAsRead', threadViewerCmid, otherCmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('MarkThreadAsRead', e);
-    }
-
-    return null;
+      await callV2(V2PrivateMessageWebService, 'MarkThreadAsRead', (i) => {
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, otherCmid);
+      });
+    });
   }
 
   static async DeleteThread(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const threadViewerCmid = Int32Proxy.Deserialize(bytes);
+    return bridge(this, 'DeleteThread', data, outputStream, async (bytes) => {
+      const token = await sessionTokenFor(Int32Proxy.Deserialize(bytes));
       const otherCmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('DeleteThread', threadViewerCmid, otherCmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('DeleteThread', e);
-    }
-
-    return null;
+      await callV2(V2PrivateMessageWebService, 'DeleteThread', (i) => {
+        StringProxy.Serialize(i, token);
+        Int32Proxy.Serialize(i, otherCmid);
+      });
+    });
   }
 }

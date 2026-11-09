@@ -65,6 +65,10 @@ import {
 } from '@festivaldev/uberstrike-js/UberStrike/DataCenter/Common/Entities';
 import { Op } from 'sequelize';
 import BaseWebService from '../BaseWebService';
+import V2UserWebService from '../v2/UserWebService';
+import { bridge, callV2, sessionTokenFor } from './LegacyBridge';
+import { MemberWalletViewProxy as V2MemberWalletViewProxy } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization';
+import { MemberWalletViewProxy as LegacyMemberWalletViewProxy } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization/Legacy';
 
 export default class UserWebService extends BaseWebService {
   static get ServiceName(): string {
@@ -76,28 +80,22 @@ export default class UserWebService extends BaseWebService {
   // protected static get ServiceInterface(): string { return 'IUserWebServiceContract'; }
 
   static async ChangeMemberName(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const cmid = Int32Proxy.Deserialize(bytes);
+    // Same name rules (profanity, duplicates, ...) as PC; MemberOperationResult is the same enum in both.
+    return bridge(this, 'ChangeMemberName', data, outputStream, async (bytes, out) => {
+      const token = await sessionTokenFor(Int32Proxy.Deserialize(bytes));
       const name = StringProxy.Deserialize(bytes);
       const locale = StringProxy.Deserialize(bytes);
       const machineId = StringProxy.Deserialize(bytes);
-
-      this.debugEndpoint('ChangeMemberName', cmid, name, locale, machineId);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('ChangeMemberName', e);
-    }
-
-    return null;
+      const v2 = await callV2(V2UserWebService, 'ChangeMemberName', (i) => {
+        StringProxy.Serialize(i, token);
+        StringProxy.Serialize(i, name);
+        StringProxy.Serialize(i, locale);
+        StringProxy.Serialize(i, machineId);
+      });
+      // 6 = MemberOperationResult.InvalidCmid when the 2.0 handler wrote nothing (no session).
+      if (v2.length) out.push(...v2);
+      else Int32Proxy.Serialize(out, 6);
+    });
   }
 
   static async IsDuplicateMemberName(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -159,25 +157,11 @@ export default class UserWebService extends BaseWebService {
   }
 
   static async GetMemberWallet(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('GetMemberWallet', cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetMemberWallet', e);
-    }
-
-    return null;
+    return bridge(this, 'GetMemberWallet', data, outputStream, async (bytes, out) => {
+      const token = await sessionTokenFor(Int32Proxy.Deserialize(bytes));
+      const v2 = await callV2(V2UserWebService, 'GetMemberWallet', (i) => StringProxy.Serialize(i, token));
+      LegacyMemberWalletViewProxy.Serialize(out, (v2.length ? V2MemberWalletViewProxy.Deserialize([...v2]) : null) as any);
+    });
   }
 
   static async GetInventory(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -358,25 +342,9 @@ export default class UserWebService extends BaseWebService {
   }
 
   static async SetScore(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      const cmid = Int32Proxy.Deserialize(bytes);
-
-      this.debugEndpoint('SetScore', cmid);
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('SetScore', e);
-    }
-
-    return null;
+    // Match results are recorded by the realtime server (UpdatePlayerStatistics), not trusted
+    // from the client; acknowledge with the empty reply 4.3.10 expects.
+    return bridge(this, 'SetScore', data, outputStream, async () => {});
   }
 
   static async GetMember(data: number[], outputStream: number[]): Promise<number[] | null> {
@@ -538,23 +506,10 @@ export default class UserWebService extends BaseWebService {
   }
 
   static async GetXPEventsView(data: number[], outputStream: number[]): Promise<number[] | null> {
-    const isEncrypted = this.isEncrypted(data);
-    const bytes = isEncrypted
-      ? this.CryptoPolicy.RijndaelDecrypt(data, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      : data;
-
-    try {
-      this.debugEndpoint('GetXPEventsView');
-
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
-    } catch (e) {
-      this.handleEndpointError('GetXPEventsView', e);
-    }
-
-    return null;
+    // Dictionary<int, PlayerXPEventView> with no entries: XP is awarded server-side.
+    return bridge(this, 'GetXPEventsView', data, outputStream, async (_bytes, out) => {
+      Int32Proxy.Serialize(out, 0);
+    });
   }
 
   static async GetLevelCapsView(data: number[], outputStream: number[]): Promise<number[] | null> {
