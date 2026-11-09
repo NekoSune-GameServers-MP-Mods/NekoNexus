@@ -28,6 +28,12 @@ namespace NekoNexus.Realtime.Server.Comm {
 		}
 
 		protected override PeerBase OnCreatePeer(InitRequest initRequest) {
+			// UberStrike 4.3.10 (Android) clients connect with their CMID as the application id and
+			// speak the legacy Cmune RPC protocol; PC clients keep using CommPeer.
+			if (Legacy.LegacyClient.IsLegacy(initRequest.ApplicationId)) {
+				return new Legacy.LegacyCommPeer(initRequest);
+			}
+
 			return new CommPeer(initRequest);
 		}
 
