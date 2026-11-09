@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Patches an UberStrike install to run NekoNexus on the FREE LiteNetLib server
   (no Photon SDK). Builds the NekoNexus client mod against YOUR copy of UberStrike,
@@ -15,7 +15,8 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][string]$UberStrikePath,
-  [Parameter(Mandatory)][string]$ServerHost,
+  # Defaults to the NekoNexus domain over HTTPS (one domain, no ports - see misc/reverse-proxy).
+  [string]$ServerHost = 'nekonexus.nekosunevr.co.uk',
   [int]$WebPort = 8080,
   [int]$FilePort = 8081,
   # Use this when the web service is behind ONE HTTPS domain (e.g. a Cloudflare tunnel /
@@ -27,6 +28,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# No -ServerHost given: the default domain is served over HTTPS behind the reverse proxy.
+if (-not $PSBoundParameters.ContainsKey('ServerHost')) { $Https = $true }
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Need($p, $what) { if (-not (Test-Path $p)) { throw "$what not found: $p" } }

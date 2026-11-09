@@ -67,13 +67,13 @@ namespace NekoNexus.Client {
 
 			[Key.EncryptWebServiceTraffic] = true,
 
-			[Key.WebServiceBaseUrls] = new List<string> { "https://ws.nekonexus.festival.tf" },
+			[Key.WebServiceBaseUrls] = new List<string> { "https://nekonexus.nekosunevr.co.uk" },
 			[Key.WebServiceUrlIndex] = 0,
 			[Key.WebServiceEndpoint] = "/2.0",
 			[Key.WebServicePrefix] = "UberStrike.DataCenter.WebService.CWS.",
 			[Key.WebServiceSuffix] = "Contract.svc",
 
-			[Key.FileServerUrls] = new List<string> { "https://static.nekonexus.festival.tf" },
+			[Key.FileServerUrls] = new List<string> { "https://nekonexus.nekosunevr.co.uk" },
 			[Key.FileServerUrlIndex] = 0,
 			[Key.ImagePathEndpoint] = "/images",
 
@@ -364,7 +364,7 @@ namespace NekoNexus.Client {
 		public bool EnableDiscordRichPresence = true;
 
 		[XmlElement]
-		public string WebServiceBaseUrl = "https://nekonexus.festival.tf:5053/2.0/";
+		public string WebServiceBaseUrl = "https://nekonexus.nekosunevr.co.uk/2.0/";
 
 		[XmlElement]
 		public string WebServicePrefix = "UberStrike.DataCenter.WebService.CWS.";
@@ -373,7 +373,7 @@ namespace NekoNexus.Client {
 		public string WebServiceSuffix = "Contract.svc";
 
 		[XmlElement]
-		public string ImagePath = "https://nekonexus.festival.tf:5054/images/";
+		public string ImagePath = "https://nekonexus.nekosunevr.co.uk/images/";
 
 		[XmlElement]
 		public bool AutoUpdates = true;
@@ -382,7 +382,7 @@ namespace NekoNexus.Client {
 		public UpdateChannel UpdateChannel = UpdateChannel.Stable;
 
 		[XmlElement]
-		public string UpdateUrl = "https://nekonexus.festival.tf:5054/updates/";
+		public string UpdateUrl = "https://nekonexus.nekosunevr.co.uk/updates/";
 
 		[XmlElement]
 		public AuthenticateApplicationView ServerOverrides;
