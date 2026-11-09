@@ -149,11 +149,11 @@ namespace NekoNexus.Realtime.Server.Comm {
 				DebugOperation(peer);
 
 				lock (Lock) {
-					foreach (var otherPeer in LobbyManager.Instance.Peers) {
-						if (otherPeer.Actor.Cmid != peer.Actor.Cmid) {
-							peer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.Peers.Select(_ => _.Actor.ActorInfo).ToList());
-						}
-					}
+					// Reply once, even if the requester is the only player online.
+					// Previously this sent N duplicate responses for N other peers,
+					// and no response at all when the lobby contained only the requester.
+					peer.LobbyEventSender.SendFullPlayerListUpdate(
+						LobbyManager.Instance.Peers.Where(p => p.Actor != null).Select(p => p.Actor.ActorInfo).ToList());
 				}
 			}
 
@@ -246,6 +246,11 @@ namespace NekoNexus.Realtime.Server.Comm {
 				var message = StringProxy.Deserialize(bytes);
 
 				DebugOperation(peer, message);
+
+				// Never let malformed or empty chat requests crash the lobby handler.
+				if (peer.Actor == null || string.IsNullOrWhiteSpace(message)) {
+					return;
+				}
 
 				if (peer.Actor.IsMuted) {
 					return;
