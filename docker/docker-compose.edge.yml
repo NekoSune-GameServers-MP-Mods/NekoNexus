@@ -1,0 +1,51 @@
+# Optional "edge" services for a NekoNexus host:
+#   proxy    - Caddy: every client-facing API on one domain (HTTPS with an automatic certificate,
+#              or plain HTTP on a port you choose). Routes: misc/reverse-proxy/Caddyfile.
+#   updater  - Watchtower: pulls new NekoNexus images and restarts the containers that use them.
+#
+# Run next to the web-service stack (same host as webservices/admin):
+#   docker compose -f docker/docker-compose.edge.yml up -d
+# On a realtime-only node, run just the updater:
+#   docker compose -f docker/docker-compose.edge.yml up -d updater
+#
+# Only containers labelled  com.centurylinklabs.watchtower.enable=true  are updated, e.g.:
+#   realtime-game:
+#     image: ghcr.io/nekosune-gameservers-mp-mods/nekonexus-realtime:latest
+#     labels:
+#       - com.centurylinklabs.watchtower.enable=true
+
+services:
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: host            # reaches the services on 127.0.0.1:8080/8081/8088
+    environment:
+      # A bare domain gets HTTPS automatically (ports 80 + 443 must reach this host).
+      # For plain HTTP on a chosen port instead:  http://nekonexus.nekosunevr.co.uk:8090
+      NEKONEXUS_SITE: nekonexus.nekosunevr.co.uk
+      NEKONEXUS_WS: 127.0.0.1:8080
+      NEKONEXUS_FILES: 127.0.0.1:8081
+      NEKONEXUS_ADMIN: 127.0.0.1:8088
+    volumes:
+      - ../misc/reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data          # certificates - keep across restarts
+      - caddy-config:/config
+
+  updater:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"     # only labelled containers
+      WATCHTOWER_CLEANUP: "true"          # remove the old image after updating
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      # Check every 5 minutes. To update only at a quiet time instead (a realtime update ends running
+      # matches), replace with e.g.  WATCHTOWER_SCHEDULE: "0 0 5 * * *"  (05:00 daily).
+      WATCHTOWER_POLL_INTERVAL: "300"
+      # Docker Engine 29+ refuses the older API version Watchtower asks for by default.
+      DOCKER_API_VERSION: "1.44"
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,5 +1,7 @@
 ﻿using log4net;
 using System;
+using System.Net.Sockets;
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -41,7 +43,14 @@ namespace NekoNexus {
 			public event EventHandler<SocketDataReceivedEventArgs> DataReceived;
 			public event EventHandler<SocketConnectionRejectedEventArgs> ConnectionRejected;
 
+			// The master pings every 10 s. A host that crashed or dropped off the network never closes the
+			// TCP connection, so the socket would look open forever; after this much silence it is
+			// treated as lost and the reconnect loop takes over.
+			private const int SILENCE_TIMEOUT_SECONDS = 45;
+			private Timer watchdog;
+
 			public SocketClient(Guid serverId, ServerType serverType, int photonId, string encryptionPassphrase) {
+				watchdog = new Timer(_ => CheckSilence(), null, 15000, 15000);
 				try {
 					ClientInfo = new SocketInfo {
 						SocketId = serverId,
@@ -61,25 +70,140 @@ namespace NekoNexus {
 				}
 			}
 
-			public async void Connect(IPAddress ip, int port, int maxAttempts = MAX_RECONNECT) {
-				RemoteEndPoint = new IPEndPoint(ip, port);
+			// ---- connection to the master (web service) ------------------------------------------
+			// The connection is retried for as long as it takes: if the web service is down for an
+			// hour, the realtime server keeps trying (backing off to every MAX_BACKOFF_SECONDS) and
+			// re-registers as soon as it is back - no manual restart. The hostname is resolved again
+			// on every attempt, so a DNS / IP change is picked up too.
+			public const int MAX_BACKOFF_SECONDS = 30;
 
+			private string remoteHost;
+			private int remotePort;
+			private int connectLoopRunning;
+			private volatile bool shuttingDown;
+			private DateTime lastRejectedUtc = DateTime.MinValue;
+
+			public bool IsConnected => SocketConnection != null && SocketConnection.ReadyState == WebSocketState.Open;
+
+			public void Connect(IPAddress ip, int port, int maxAttempts = 0) => Connect(ip.ToString(), port, maxAttempts);
+
+			/// <summary>Connect to the master; maxAttempts 0 = retry until connected.</summary>
+			public void Connect(string host, int port, int maxAttempts = 0) {
+				remoteHost = host;
+				remotePort = port;
+				StartConnectLoop(maxAttempts);
+			}
+
+			public void Reconnect(int maxAttempts = 0) {
+				if (remoteHost == null || shuttingDown) return;
+				StartConnectLoop(maxAttempts);
+			}
+
+			public void Shutdown() {
+				shuttingDown = true;
+				CloseQuietly(SocketConnection);
+			}
+
+			private void StartConnectLoop(int maxAttempts) {
+				if (Interlocked.CompareExchange(ref connectLoopRunning, 1, 0) != 0) return; // a loop is already trying
+				Task.Run(async () => {
+					try {
+						await ConnectLoop(maxAttempts);
+					} catch (Exception e) {
+						Log.Error("Master connection loop failed", e);
+					} finally {
+						Interlocked.Exchange(ref connectLoopRunning, 0);
+					}
+				});
+			}
+
+			private async Task ConnectLoop(int maxAttempts) {
+				// Just rejected by the master (e.g. a stale session still registered): don't hammer it.
+				if ((DateTime.UtcNow - lastRejectedUtc).TotalSeconds < MAX_BACKOFF_SECONDS) {
+					await Task.Delay(TimeSpan.FromSeconds(MAX_BACKOFF_SECONDS));
+				}
+
+				var attempt = 0;
+				var delay = RECONNECT_INTERVAL;
+				while (!shuttingDown && (maxAttempts == 0 || attempt < maxAttempts)) {
+					attempt++;
+					try {
+						var address = ResolveIPv4(remoteHost);
+						RemoteEndPoint = new IPEndPoint(address, remotePort);
+						var ws = CreateSocket(RemoteEndPoint);
+
+						ConnectionWaitHandle.Reset();
+						ConnectionRejectedHandle.Reset();
+						ws.ConnectAsync();
+
+						if (ConnectionWaitHandle.WaitOne(TimeSpan.FromSeconds(CONNECT_TIMEOUT))) {
+							if (attempt > 1) Log.Info($"Reconnected to master {remoteHost}:{remotePort} after {attempt} attempts.");
+							return;
+						}
+						CloseQuietly(ws);
+					} catch (Exception e) {
+						if (attempt == 1) Log.Warn($"Master {remoteHost}:{remotePort}: {e.Message}");
+					}
+
+					if (attempt == 1 || attempt % 10 == 0) {
+						Log.Warn($"Master {remoteHost}:{remotePort} not reachable (attempt {attempt}) - retrying every {Math.Min(MAX_BACKOFF_SECONDS, delay)}s until it is back.");
+					}
+					await Task.Delay(TimeSpan.FromSeconds(delay));
+					delay = Math.Min(MAX_BACKOFF_SECONDS, delay * 2);
+				}
+			}
+
+			private void CheckSilence() {
+				try {
+					if (shuttingDown || !IsConnected) return;
+					if ((DateTime.UtcNow - LastResponseTime).TotalSeconds < SILENCE_TIMEOUT_SECONDS) return;
+					Log.Warn($"No ping from master {remoteHost}:{remotePort} for {SILENCE_TIMEOUT_SECONDS}s - reconnecting.");
+					var dead = SocketConnection;
+					SocketConnection = null;   // its late OnClose is then ignored as a replaced socket
+					CloseQuietly(dead);
+					Disconnected?.Invoke(this, new SocketDisconnectedEventArgs { Socket = dead, Info = ClientInfo, Reason = "ping timeout" });
+				} catch (Exception e) {
+					Log.Error("Master watchdog failed", e);
+				}
+			}
+
+			private static IPAddress ResolveIPv4(string host) {
+				if (IPAddress.TryParse(host, out var ip)) return ip;
+				var address = Dns.GetHostAddresses(host).FirstOrDefault(_ => _.AddressFamily == AddressFamily.InterNetwork);
+				return address ?? throw new SocketException((int)SocketError.HostNotFound);
+			}
+
+			private static void CloseQuietly(WebSocketSharp.WebSocket ws) {
+				if (ws == null) return;
+				try {
+					if (ws.ReadyState == WebSocketState.Open || ws.ReadyState == WebSocketState.Connecting) ws.CloseAsync();
+				} catch { }
+			}
+
+			/// <summary>A fresh socket per attempt: a closed WebSocketSharp client can't be reused.</summary>
+			private WebSocketSharp.WebSocket CreateSocket(IPEndPoint endPoint) {
 				var uriBuilder = new UriBuilder {
 					Scheme = "ws",
-					Host = RemoteEndPoint.Address.ToString(),
-					Port = RemoteEndPoint.Port
+					Host = endPoint.Address.ToString(),
+					Port = endPoint.Port
 				};
 
-				SocketConnection = new WebSocketSharp.WebSocket(uriBuilder.ToString());
+				var ws = new WebSocketSharp.WebSocket(uriBuilder.ToString());
+				// WebSocketSharp logs every refused attempt as Fatal with a stack trace; the loop above
+				// logs one readable line instead.
+				ws.Log.Output = (data, file) => { };
+				SocketConnection = ws;
 
-				SocketConnection.OnOpen += (sender, e) => {
+				ws.OnOpen += (sender, e) => {
+					LastResponseTime = DateTime.UtcNow;
 					ConnectionWaitHandle.Set();
 				};
 
-				SocketConnection.OnClose += (sender, e) => {
+				ws.OnClose += (sender, e) => {
+					if (!ReferenceEquals(sender, SocketConnection)) return; // an older, replaced socket
 					if ((e.Code == (ushort)CloseStatusCode.Abnormal && ConnectionWaitHandle.WaitOne(0)) || e.Code != (ushort)CloseStatusCode.Abnormal) {
 						Disconnected?.Invoke(this, new SocketDisconnectedEventArgs {
-							Socket = SocketConnection,
+							Socket = ws,
 							Info = ClientInfo,
 							Code = e.Code,
 							Reason = e.Reason
@@ -87,7 +211,7 @@ namespace NekoNexus {
 					}
 				};
 
-				SocketConnection.OnMessage += (sender, e) => {
+				ws.OnMessage += (sender, e) => {
 					using (var inputStream = new MemoryStream(e.RawData))
 					using (var outputStream = new MemoryStream()) {
 						var payloadType = Int32Proxy.Deserialize(inputStream);
@@ -127,6 +251,7 @@ namespace NekoNexus {
 										});
 									} else if (status.Rejected) {
 										ConnectionRejectedHandle.Set();
+										lastRejectedUtc = DateTime.UtcNow;
 
 										ConnectionRejected?.Invoke(this, new SocketConnectionRejectedEventArgs {
 											Info = ClientInfo,
@@ -155,42 +280,7 @@ namespace NekoNexus {
 					}
 				};
 
-				int connectionAttempts = 0;
-
-				while ((maxAttempts == 0 || connectionAttempts < maxAttempts) && !ConnectionRejectedHandle.WaitOne(0)) {
-					try {
-						connectionAttempts++;
-
-						ConnectionWaitHandle.Reset();
-
-						SocketConnection.ConnectAsync();
-
-						if (!ConnectionWaitHandle.WaitOne(TimeSpan.FromSeconds(CONNECT_TIMEOUT))) {
-							Log.Info($"Failed to establish connection within {CONNECT_TIMEOUT} second(s), retrying in {RECONNECT_INTERVAL} second(s). (Attempt {connectionAttempts})");
-							SocketConnection.Close();
-						} else {
-							return;
-						}
-
-					} catch (Exception e) {
-						Log.Error(e);
-					}
-
-
-					if (maxAttempts == 0 || connectionAttempts < maxAttempts) {
-						await Task.Delay(TimeSpan.FromSeconds(RECONNECT_INTERVAL));
-					} else {
-						Log.Info($"Failed to establish connection within {maxAttempts} attempts(s).");
-						return;
-					}
-				}
-			}
-
-			public void Reconnect(int maxAttempts = MAX_RECONNECT) {
-				if (RemoteEndPoint == null)
-					return;
-
-				Connect(RemoteEndPoint.Address, RemoteEndPoint.Port, maxAttempts);
+				return ws;
 			}
 
 			#region Send
@@ -201,6 +291,7 @@ namespace NekoNexus {
 			}
 
 			public void SendBytesSync(byte[] bytes) {
+				if (!IsConnected) return; // master offline: the reconnect loop re-syncs state when back
 				SocketConnection.Send(bytes);
 			}
 
@@ -215,13 +306,14 @@ namespace NekoNexus {
 					Int32Proxy.Serialize(stream, 0x42);
 					EnumProxy<PacketType>.Serialize(stream, type);
 
-					SocketConnection.Send(stream.ToArray());
+					if (IsConnected) SocketConnection.Send(stream.ToArray());
 				}
 			}
 
 			public async Task<object> Send(PacketType type, object payload, bool oneWay = true, Guid conversationId = default, ServerType serverType = ServerType.None) {
 				Payload payloadObj = default;
 				await Task.Run(() => {
+					if (!IsConnected) return;
 					SocketConnection.Send(Payload.Encode(type, payload, CryptoProvider, out payloadObj, oneWay, conversationId, serverType));
 				});
 

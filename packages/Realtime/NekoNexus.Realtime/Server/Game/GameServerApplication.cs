@@ -93,7 +93,7 @@ namespace NekoNexus.Realtime.Server.Game {
 
 			SocketClient.Disconnected += (sender, e) => {
 				Log.Info("Game: DISCONNECTED FROM SOCKET");
-				SocketClient.Reconnect(25);
+				SocketClient.Reconnect(); // keeps trying until the master is back
 			};
 
 			SocketClient.ConnectionRejected += (sender, e) => {
@@ -174,11 +174,9 @@ namespace NekoNexus.Realtime.Server.Game {
 				}
 			};
 
-			var tcpAddress = Dns.GetHostAddresses(Configuration.MasterHostname).Where(_ => _.AddressFamily == AddressFamily.InterNetwork).First();
-
-			if (tcpAddress != null) {
-				SocketClient.Connect(tcpAddress, Configuration.SocketPort);
-			}
+			// Resolved and retried inside the client: a master that is down or not resolvable yet at
+			// startup no longer leaves this server unregistered until someone restarts it.
+			SocketClient.Connect(Configuration.MasterHostname, Configuration.SocketPort);
 
 			monitoringTimer = new System.Threading.Timer(_ => {
 				try { PublishMonitoringData(); } catch { }

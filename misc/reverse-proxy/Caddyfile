@@ -1,36 +1,49 @@
-# One-domain reverse proxy for NekoNexus (automatic HTTPS via Caddy).
-# Put your real domain below and run:  caddy run --config ./Caddyfile
+# NekoNexus behind one address - every client-facing API on one domain, no ip:port for players.
 #
-# This fronts the three internal web ports behind ONE domain so the client only needs a
-# single URL. The realtime<->master WebSocket (8082) stays internal and is NOT exposed.
+# Set with environment variables (docker/docker-compose.edge.yml does this):
+#   NEKONEXUS_SITE    the public address
+#                       nekonexus.example.com            -> HTTPS, certificate obtained automatically
+#                       http://nekonexus.example.com:8090 -> plain HTTP on that port
+#   NEKONEXUS_WS      web service      (default 127.0.0.1:8080)
+#   NEKONEXUS_FILES   file server      (default 127.0.0.1:8081)
+#   NEKONEXUS_ADMIN   website + admin  (default 127.0.0.1:8088)
 #
-# After this is up, point the client (NekoNexus Settings -> Web Service URLs) at:
-#     https://nekonexus.example.com
-# (web service endpoint /2.0 and file paths /images, /updates resolve under it).
+# Point the clients at it:
+#   PC (NekoNexus Settings)   Web Service URL  https://<domain>/2.0/     File Server URL  https://<domain>/
+#   Android APK               fix_android_apk.py --web-service https://<domain>/1.0.2/ --content https://<domain>/UberStrike/
+#
+# Not proxied: the realtime game servers (UDP 5055 / 5155) - both client versions connect to them by
+# IPv4 address from the server list, so they keep their own IP. The master socket (8082) is server to
+# server only and must not be exposed to players.
 
-nekonexus.example.com {
+{$NEKONEXUS_SITE:nekonexus.example.com} {
 	encode gzip
 
-	# SOAP web service (UberStrike.DataCenter.WebService.CWS...Contract.svc) lives under /2.0
-	handle_path /2.0/* {
-		reverse_proxy 127.0.0.1:8080
+	# SOAP web services. The path prefix is part of the route (/<version>/<Service>Contract.svc),
+	# so it must be passed through unchanged - handle, not handle_path.
+	handle /2.0/* {
+		reverse_proxy {$NEKONEXUS_WS:127.0.0.1:8080}
+	}
+	handle /1.0.2/* {
+		reverse_proxy {$NEKONEXUS_WS:127.0.0.1:8080}
 	}
 
-	# File server: images + game update files
+	# File server: PC client images and auto-updates, Android 4.3.10 content (items, maps, images).
+	handle /UberStrike/* {
+		reverse_proxy {$NEKONEXUS_FILES:127.0.0.1:8081}
+	}
 	handle /images/* {
-		reverse_proxy 127.0.0.1:8081
+		reverse_proxy {$NEKONEXUS_FILES:127.0.0.1:8081}
 	}
 	handle /updates/* {
-		reverse_proxy 127.0.0.1:8081
+		reverse_proxy {$NEKONEXUS_FILES:127.0.0.1:8081}
+	}
+	handle /crossdomain.xml {
+		reverse_proxy {$NEKONEXUS_FILES:127.0.0.1:8081}
 	}
 
-	# (Optional) admin dashboard at /admin — protect this at the network/VPN level too.
-	handle_path /admin/* {
-		reverse_proxy 127.0.0.1:8088
-	}
-
-	# Everything else -> file server root
+	# Everything else: the website, player pages, store and the admin panel (/admin) with its API.
 	handle {
-		reverse_proxy 127.0.0.1:8081
+		reverse_proxy {$NEKONEXUS_ADMIN:127.0.0.1:8088}
 	}
 }
