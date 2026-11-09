@@ -5,6 +5,9 @@ on:
     paths:
       - 'packages/Realtime/**'
       - 'shims/**'
+      - 'packages/ws/**'
+      - 'packages/nekonexus-models/**'
+      - 'packages/uberstrike-js/**'
       - '.github/workflows/android-legacy-validation.yml'
   workflow_dispatch:
 
@@ -31,3 +34,17 @@ jobs:
       - name: Build realtime host and server
         shell: pwsh
         run: dotnet build packages/Realtime/NekoNexus.Realtime.Host/NekoNexus.Realtime.Host.csproj -c Release
+
+  legacy-webservices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Build legacy web services
+        run: |
+          mkdir -p .release/server/_pak/NekoNexus.WebServices
+          bun --cwd=./packages/ws run build:linux-x64
