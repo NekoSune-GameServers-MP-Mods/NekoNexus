@@ -53,9 +53,12 @@ selectable (non-zero latency, status Alive) after this succeeds.
 
 A sequence of values, each `[CmuneDataType byte][payload]`.
 
-* Numbers are **big-endian** (the client byte-reverses `BitConverter` output on little-endian CPUs).
-* `String` (`0x0C`): `[int16 BE char count][UTF-16LE chars]`; empty string = `00 00`.
-* `Array_Byte` (`0x0F`): `[int32 BE count][bytes]`.
+* Numbers are **little-endian**. `DefaultByteConverter.CheckEndian` only reverses bytes on big-endian
+  CPUs, and Android/ARM is little-endian. (An earlier version of this note said big-endian; the server
+  then byte-swapped every number, e.g. the lobby room 66 arrived as `0x42000000` and every lobby
+  join was refused.)
+* `String` (`0x0C`): `[int16 char count][UTF-16LE chars]`; empty string = `00 00`.
+* `Array_Byte` (`0x0F`): `[int32 count][bytes]`.
 * `ServerLoadData` (`0x2F`, named PerformanceData in the enum): `[int players][int peers][int rooms][float maxPlayers]`.
 
 Type codes: Byte `01`, SByte `02`, Bool `03`, Int16 `04`, UInt16 `05`, Int32 `06`, Long `08`,

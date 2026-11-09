@@ -6,8 +6,10 @@ namespace NekoNexus.Realtime.Server.Legacy {
 	/// <summary>
 	/// Port of the 4.3.10 client's RealtimeSerialization / DefaultByteConverter for the types the
 	/// server needs. Every value is written as [CmuneDataType byte][payload]. Numbers are
-	/// BIG-endian (the client reverses BitConverter output on little-endian CPUs); strings are
-	/// [int16 BE char count][UTF-16LE chars]; byte arrays are [int32 BE count][bytes].
+	/// LITTLE-endian: DefaultByteConverter.CheckEndian only reverses on big-endian CPUs, and
+	/// Android/ARM is little-endian. (This was once written big-endian, which byte-swapped every
+	/// number: the lobby room 66 arrived as 0x42000000, and server load showed 33554432 players.)
+	/// Strings are [int16 char count][UTF-16LE chars]; byte arrays are [int32 count][bytes].
 	/// Also handles the lobby types the comm server needs: CmuneRoomID, RoomMetaData, SyncObject
 	/// (CommActorInfo) and their lists. Game-specific types (GameData, CmuneTransform ...) are not
 	/// handled yet and raise <see cref="LegacyProtocolException"/> so callers can log them.
@@ -67,15 +69,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				case string str: bytes.Add(Type.String); WriteString(bytes, str); break;
 				case byte[] arr: bytes.Add(Type.ArrayByte); WriteInt(bytes, arr.Length); bytes.AddRange(arr); break;
 				case LegacyServerLoadData load:
-					// Unlike every other 4.3.10 type, the client reads ServerLoadData with
-					// BitConverter as-is, i.e. LITTLE-endian. Writing it big-endian showed
-					// "33554432 Players Online, 16777216 Games" (2 and 1 byte-swapped) and a
-					// capacity of 7.18E-41 (100f swapped), so every server looked full.
 					bytes.Add(Type.ServerLoadData);
-					WriteLittleEndian(bytes, BitConverter.GetBytes(load.PlayersConnected));
-					WriteLittleEndian(bytes, BitConverter.GetBytes(load.PeersConnected));
-					WriteLittleEndian(bytes, BitConverter.GetBytes(load.RoomsCreated));
-					WriteLittleEndian(bytes, BitConverter.GetBytes(load.MaxPlayerCount));
+					WriteInt(bytes, load.PlayersConnected);
+					WriteInt(bytes, load.PeersConnected);
+					WriteInt(bytes, load.RoomsCreated);
+					WriteFloat(bytes, load.MaxPlayerCount);
 					break;
 				case LegacyRoomId room: bytes.Add(Type.RoomId); room.Write(bytes); break;
 				case LegacyRoomMetaData meta: meta.WriteTyped(bytes); break;
@@ -115,22 +113,10 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		}
 
 		private static void WriteBigEndian(List<byte> bytes, byte[] value) {
-			if (BitConverter.IsLittleEndian) Array.Reverse(value);
-			bytes.AddRange(value);
-		}
-
-		private static void WriteLittleEndian(List<byte> bytes, byte[] value) {
+			// Name kept for history: the 4.3.10 wire is LITTLE-endian (DefaultByteConverter.CheckEndian
+			// only reverses on big-endian CPUs). See the class summary.
 			if (!BitConverter.IsLittleEndian) Array.Reverse(value);
 			bytes.AddRange(value);
-		}
-
-		private static byte[] ReadLittleEndian(byte[] bytes, ref int i, int count) {
-			Require(bytes, i, count);
-			var value = new byte[count];
-			Buffer.BlockCopy(bytes, i, value, 0, count);
-			i += count;
-			if (!BitConverter.IsLittleEndian) Array.Reverse(value);
-			return value;
 		}
 
 		// ---- decode ----------------------------------------------------------------
@@ -166,10 +152,10 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				}
 				case Type.ServerLoadData:
 					return new LegacyServerLoadData {
-						PlayersConnected = BitConverter.ToInt32(ReadLittleEndian(bytes, ref i, 4), 0),
-						PeersConnected = BitConverter.ToInt32(ReadLittleEndian(bytes, ref i, 4), 0),
-						RoomsCreated = BitConverter.ToInt32(ReadLittleEndian(bytes, ref i, 4), 0),
-						MaxPlayerCount = BitConverter.ToSingle(ReadLittleEndian(bytes, ref i, 4), 0),
+						PlayersConnected = ReadInt(bytes, ref i),
+						PeersConnected = ReadInt(bytes, ref i),
+						RoomsCreated = ReadInt(bytes, ref i),
+						MaxPlayerCount = ReadFloat(bytes, ref i),
 					};
 				case Type.ListInt16: {
 					var n = ReadCount(bytes, ref i);
@@ -285,7 +271,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			var value = new byte[count];
 			Buffer.BlockCopy(bytes, i, value, 0, count);
 			i += count;
-			if (BitConverter.IsLittleEndian) Array.Reverse(value);
+			if (!BitConverter.IsLittleEndian) Array.Reverse(value); // wire is little-endian
 			return value;
 		}
 
@@ -296,8 +282,8 @@ namespace NekoNexus.Realtime.Server.Legacy {
 	}
 
 	/// <summary>
-	/// UberStrike.Realtime.UnitySdk.CmuneRoomID: [int32 BE room number][ConnectionAddress: 4 IP bytes,
-	/// uint16 BE port]. Kept as raw bytes so ids from the client are echoed back unchanged.
+	/// UberStrike.Realtime.UnitySdk.CmuneRoomID: [int32 room number][ConnectionAddress: 4 IP bytes,
+	/// uint16 port]. Kept as raw bytes so ids from the client are echoed back unchanged.
 	/// </summary>
 	public sealed class LegacyRoomId {
 		public const int Size = 10;
@@ -323,7 +309,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		}
 
 		public string Server => Address == null || Address.Length != 6 ? "" :
-			$"{Address[0]}.{Address[1]}.{Address[2]}.{Address[3]}:{(Address[4] << 8) | Address[5]}";
+			$"{Address[0]}.{Address[1]}.{Address[2]}.{Address[3]}:{Address[4] | (Address[5] << 8)}"; // port is little-endian
 
 		public override string ToString() => $"{Number}@{Server}";
 	}
@@ -423,8 +409,8 @@ namespace NekoNexus.Realtime.Server.Legacy {
 	}
 
 	/// <summary>
-	/// UberStrike.Realtime.UnitySdk.SyncObject: [int32 BE delta mask] and, when the mask is not 0,
-	/// [int32 BE id] followed by one type-prefixed value per set bit. The client walks bits 0..32
+	/// UberStrike.Realtime.UnitySdk.SyncObject: [int32 delta mask] and, when the mask is not 0,
+	/// [int32 id] followed by one type-prefixed value per set bit. The client walks bits 0..32
 	/// with <c>1 &lt;&lt; (i &amp; 31)</c>, so bit 0 is visited twice (i = 0 and i = 32); this
 	/// class reproduces that exactly, otherwise lists of SyncObjects go out of step.
 	/// </summary>
