@@ -8,12 +8,13 @@ namespace NekoNexus.Realtime.Server.Legacy {
 	/// <summary>
 	/// UberStrike 4.3.10 comm/lobby peer.
 	/// The Android ClientCommCenter.SendLobbyChatMessage method (Assembly-CSharp.dll)
-	/// uses instance ID 25, method ID 2, with [player name, message] strings.
+	/// uses method ID 25 with [CMID, message] arguments.
 	/// The name is UNTRUSTED and never forwarded as a PC identity.
 	/// </summary>
 	public class LegacyCommPeer : LegacyPeer {
-		private const short LobbyChatInstanceId = 25;
-		private const byte LobbyChatMethodId = 2;
+		// Verified against Android 4.3.10 ClientCommCenter.OnLobbyChatMessage attribute.
+		private const byte LobbyChatMethodId = 25;
+		private short? lobbyInstanceId;
 		private DateTime lastChatUtc = DateTime.MinValue;
 		private static readonly ProfanityFilter.ProfanityFilter ProfanityFilter = new ProfanityFilter.ProfanityFilter();
 
@@ -24,7 +25,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		protected override bool OnLegacyOperation(OperationRequest request) {
 			if (request.OperationCode != LegacyOperationCode.MessageToServer) return false;
 			if (!request.Parameters.TryGetValue(LegacyParameterKey.InstanceId, out var instanceObj)
-				|| !(instanceObj is short instanceId) || instanceId != LobbyChatInstanceId) return false;
+				|| !(instanceObj is short instanceId)) return false;
 			if (!request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var methodObj)
 				|| !(methodObj is byte methodId) || methodId != LobbyChatMethodId) return false;
 
@@ -47,9 +48,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				return true;
 			}
 
-			if (args.Length != 2 || !(args[0] is string) || !(args[1] is string rawMessage)
+			if (args.Length != 2 || !(args[0] is int claimedCmid) || claimedCmid != Cmid || !(args[1] is string rawMessage)
 				|| string.IsNullOrWhiteSpace(rawMessage)) return true;
 
+			// Remember the object instance assigned by the client so outgoing events can be addressed.
+			lobbyInstanceId = instanceId;
 			var now = DateTime.UtcNow;
 			if ((now - lastChatUtc).TotalMilliseconds < 750) return true;
 			lastChatUtc = now;
