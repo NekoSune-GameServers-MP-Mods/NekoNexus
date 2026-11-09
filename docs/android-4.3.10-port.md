@@ -61,3 +61,33 @@ Put them in `server-data/android-content/UberStrike/Maps/4.3.10/` (served at
 `AqualabResearchHub.unity3d` or `AqualabResearchHub-<anything>.unity3d` (case-insensitive;
 a name containing `Android` wins over others). The folder is re-read on every request, so new
 maps appear without a restart. The web-services log prints how many Android maps were found.
+
+## Fixing an existing APK (no dotnet needed)
+
+`packages/Client/Android/fix_android_apk.py` applies the Android fixes to an APK you already
+built, using only Python 3.8+ and a JDK (or Android SDK `apksigner`) for signing:
+
+```powershell
+python packages/Client/Android/fix_android_apk.py `
+  "UberStrike-NekoNexus.apk" "UberStrike-NekoNexus-fixed.apk" `
+  --web-service "http://SERVER_HOST:8080/1.0.2/" `
+  --content "http://SERVER_HOST:8081/UberStrike/"
+```
+
+It sets the URLs (both optional), patches the NekoNexus Photon shim inside the APK
+(`DispatchIncomingCommands`/`SendOutgoingCommands` return `false`, `RoundTripTime` is never 0;
+the same fixes are in `shims/Photon3Unity3D.Shim/PhotonPeer.cs` for new builds), strips old
+signatures, aligns stored entries and signs with `nekonexus-android.jks` (created on first use;
+keep it so later builds install as updates). It only touches the exact shim method bodies it
+recognises and is safe to run again on a fixed APK.
+
+Why the shim fixes matter on Android:
+
+* The 4.3.10 client runs `while (peer.DispatchIncomingCommands()) {}` every frame. With the shim
+  returning `true` the main thread never left that loop once a realtime connection started: the
+  screen froze after login (tutorial or name screen) and Back/Home produced an ANR.
+* The client's server check reads the latency right after connecting and treats 0 as
+  unreachable. LiteNetLib's `Ping` is 0 for about a second after connecting, so every server was
+  hidden.
+* On the server side, 4.3.10 clients also need the legacy protocol layer described in
+  `docs/android-4.3.10-realtime-protocol.md`.

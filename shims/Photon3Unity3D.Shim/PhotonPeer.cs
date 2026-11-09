@@ -53,7 +53,11 @@ namespace ExitGames.Client.Photon {
 			: this(listener, useTcp ? ConnectionProtocol.Tcp : ConnectionProtocol.Udp) { }
 
 		public PeerStateValue PeerState => _state;
-		public int RoundTripTime => _server?.Ping * 2 ?? 0;
+		// LiteNetLib only measures Ping after its first ping/pong (~1 s after connecting) and
+		// reports 0 for links under 2 ms. The 4.3.10 client reads this right after a quick
+		// connect-request-disconnect (ServerLoadRequest) and treats latency 0 as "unreachable",
+		// hiding every server. Fall back to the measured connect handshake time until then.
+		public int RoundTripTime => _server == null ? 0 : (_server.Ping > 0 ? _server.Ping * 2 : Math.Max(1, _connectRttMs));
 		public int RoundTripTimeVariance => 0;
 		public long BytesIn => _net.Statistics.BytesReceived;
 		public long BytesOut => _net.Statistics.BytesSent;
@@ -70,6 +74,9 @@ namespace ExitGames.Client.Photon {
 		// subtracts against. Without this the value would be the client's own uptime (a different
 		// epoch) and the round clock would never count down.
 		public int ServerTimeInMilliSeconds => Environment.TickCount + _serverTimeOffsetMs;
+
+		private int _connectStartTick;
+		private int _connectRttMs = 1;
 
 		public bool Connect(string serverAddress, string applicationName) {
 			ServerAddress = serverAddress;
@@ -88,6 +95,7 @@ namespace ExitGames.Client.Photon {
 			// appId (application version) rides the connect payload -> InitRequest.ApplicationId.
 			var writer = new NetDataWriter();
 			writer.Put(applicationName ?? string.Empty);
+			_connectStartTick = Environment.TickCount;
 			_server = _net.Connect(host, port, writer);
 			return _server != null;
 		}
@@ -103,11 +111,15 @@ namespace ExitGames.Client.Photon {
 		// Pumps the transport; UberStrike calls this each frame.
 		public void Service() => _net.PollEvents();
 
-		public bool SendOutgoingCommands() { _net.PollEvents(); return true; }
+		// Photon returns false once nothing is left to send/dispatch, and game code loops on it:
+		// 4.3.10's PhotonPeerListener.Update() does `while (peer.DispatchIncomingCommands()) {}`.
+		// PollEvents() already delivers everything queued in one call, so always report "done";
+		// returning true froze the Android client's main thread as soon as it connected.
+		public bool SendOutgoingCommands() { _net.PollEvents(); return false; }
 
 		public bool SendAcksOnly() { /* LiteNetLib auto-acks */ return true; }
 
-		public bool DispatchIncomingCommands() { _net.PollEvents(); return true; }
+		public bool DispatchIncomingCommands() { _net.PollEvents(); return false; }
 
 		// Photon uses this to (re)sync the server clock; the game calls it on connect and at match
 		// start. We issue a round-trip time-sync so ServerTimeInMilliSeconds tracks the server's
@@ -156,6 +168,7 @@ namespace ExitGames.Client.Photon {
 		// ---- INetEventListener ----------------------------------------------------
 
 		public void OnPeerConnected(NetPeer peer) {
+			_connectRttMs = Math.Max(1, Environment.TickCount - _connectStartTick);
 			_server = peer;
 			_state = PeerStateValue.Connected;
 			_listener.DebugReturn(DebugLevel.INFO, "[LNL] connected to " + ServerAddress);
