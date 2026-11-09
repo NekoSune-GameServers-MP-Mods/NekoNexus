@@ -42,6 +42,12 @@ namespace NekoNexus.Realtime.Server {
 		[YamlMember]
 		public bool EnableChatLog = true;
 
+		// Compatibility/testing only: legacy 4.3.10 currently supplies CMID without
+		// a verifiable per-session credential. Keep guest chat disabled until the
+		// Android patcher and server exchange an authenticated ticket.
+		[YamlMember]
+		public bool EnableLegacyGuestChat = false;
+
 		#region Client Verification
 		[YamlMember]
 		public int HeartbeatInterval = 5;
