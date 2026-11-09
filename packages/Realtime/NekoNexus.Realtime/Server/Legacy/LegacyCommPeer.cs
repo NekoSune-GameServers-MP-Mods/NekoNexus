@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
+using PhotonHostRuntimeInterfaces;
 using NekoNexus.Realtime.Server.Comm;
 using Photon.SocketServer;
 using static NekoNexus.WebSocket;
@@ -16,9 +19,13 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		private const byte LobbyChatMethodId = 25;
 		private short? lobbyInstanceId;
 		private DateTime lastChatUtc = DateTime.MinValue;
+		private static readonly object RegistryLock = new object();
+		private static readonly HashSet<LegacyCommPeer> ConnectedPeers = new HashSet<LegacyCommPeer>();
 		private static readonly ProfanityFilter.ProfanityFilter ProfanityFilter = new ProfanityFilter.ProfanityFilter();
 
-		public LegacyCommPeer(InitRequest initRequest) : base(initRequest) { }
+		public LegacyCommPeer(InitRequest initRequest) : base(initRequest) {
+			lock (RegistryLock) ConnectedPeers.Add(this);
+		}
 
 		protected override string Name => "LegacyComm";
 
@@ -27,7 +34,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			if (!request.Parameters.TryGetValue(LegacyParameterKey.InstanceId, out var instanceObj)
 				|| !(instanceObj is short instanceId)) return false;
 			if (!request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var methodObj)
-				|| !(methodObj is byte methodId) || methodId != LobbyChatMethodId) return false;
+				|| !(methodObj is byte methodId)) return false;
+			// ClientCommCenter shares its network object instance ID among lobby methods.
+			// Remember it even when guest chat is disabled, for PC -> Android chat.
+			if (methodId != LobbyChatMethodId) return false;
+			lobbyInstanceId = instanceId;
 
 			// Client 4.3.10 sends a numeric CMID in the transport application id.
 			// This value is spoofable: there is no authenticated user session here.
@@ -51,8 +62,6 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			if (args.Length != 2 || !(args[0] is int claimedCmid) || claimedCmid != Cmid || !(args[1] is string rawMessage)
 				|| string.IsNullOrWhiteSpace(rawMessage)) return true;
 
-			// Remember the object instance assigned by the client so outgoing events can be addressed.
-			lobbyInstanceId = instanceId;
 			var now = DateTime.UtcNow;
 			if ((now - lastChatUtc).TotalMilliseconds < 750) return true;
 			lastChatUtc = now;
@@ -71,6 +80,35 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				new SocketChatMessage { Cmid = 0, Name = "Android Guest", Message = message },
 				serverType: ServerType.Comm);
 			return true;
+		}
+
+		/// <summary>
+		/// Translate PC/master lobby chat to the legacy Android network-message event.
+		/// The client's OnLobbyChatMessage is marked method 25 and accepts
+		/// (int cmid, int context, string name, string message).
+		/// Only peers whose comm instance ID has been observed can receive it.
+		/// </summary>
+		public static void BroadcastLobbyChat(int cmid, string name, string message) {
+			if (string.IsNullOrWhiteSpace(message)) return;
+			LegacyCommPeer[] peers;
+			lock (RegistryLock) peers = ConnectedPeers.Where(p => p.lobbyInstanceId.HasValue).ToArray();
+			foreach (var peer in peers) {
+				try {
+					var data = new EventData(LegacyOperationCode.MessageToAll, new Dictionary<byte, object> {
+						{ LegacyParameterKey.InstanceId, peer.lobbyInstanceId.Value },
+						{ LegacyParameterKey.MethodId, LobbyChatMethodId },
+						{ LegacyParameterKey.Bytes, LegacySerialization.ToBytes(cmid, 0, name ?? "", message) }
+					});
+					peer.SendEvent(data, new SendParameters());
+				} catch (Exception ex) {
+					Log.Warn($"[LegacyComm] cmid {peer.Cmid}: failed to deliver lobby message", ex);
+				}
+			}
+		}
+
+		protected override void OnDisconnect(DisconnectReason reasonCode, string reasonDetail) {
+			lock (RegistryLock) ConnectedPeers.Remove(this);
+			base.OnDisconnect(reasonCode, reasonDetail);
 		}
 
 		protected override bool OnApplicationMethod(byte methodId, object[] args, out object[] reply) {
