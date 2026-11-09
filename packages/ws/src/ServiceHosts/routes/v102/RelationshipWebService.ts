@@ -16,20 +16,31 @@
  */
 
 import { ApiVersion } from '@/utils/enums';
+import { RealtimeNotify } from '@/utils/RealtimeNotify';
 import { ContactRequest, PublicProfile, UserAccount } from '@festivaldev/nekonexus-models';
 import {
   ContactGroupView,
   ContactRequestStatus,
   ContactRequestView,
-  type PublicProfileView,
+  MemberOperationResult,
+  PublicProfileView,
 } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
 import {
+  ContactRequestAcceptView,
+  ContactRequestDeclineView,
+} from '@festivaldev/uberstrike-js/UberStrike/DataCenter/Common/Entities';
+import {
   ContactRequestViewProxy,
+  EnumProxy,
   Int32Proxy,
   ListProxy,
   StringProxy,
 } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization';
-import { ContactGroupViewProxy } from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization/Legacy';
+import {
+  ContactGroupViewProxy,
+  ContactRequestAcceptViewProxy,
+  ContactRequestDeclineViewProxy,
+} from '@festivaldev/uberstrike-js/UberStrike/Core/Serialization/Legacy';
 import { Op } from 'sequelize';
 import BaseWebService from '../BaseWebService';
 
@@ -55,10 +66,44 @@ export default class RelationshipWebService extends BaseWebService {
 
       this.debugEndpoint('SendContactRequest', initiatorCmid, receiverCmid, message);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      // Same rules as the 2.0 endpoint. 1.0.2 has no session token: the client sends its CMID.
+      const initiatorProfile = await PublicProfile.findOne({ where: { Cmid: initiatorCmid } });
+      let requestId = 0;
+      if (initiatorProfile && receiverCmid !== initiatorCmid) {
+        const existing = await ContactRequest.findOne({
+          where: { InitiatorCmid: initiatorCmid, ReceiverCmid: receiverCmid },
+        });
+        if (!existing) {
+          requestId = Math.randomInt();
+          await ContactRequest.create({
+            RequestId: requestId,
+            InitiatorCmid: initiatorCmid,
+            InitiatorName: initiatorProfile.Name,
+            InitiatorMessage: message,
+            ReceiverCmid: receiverCmid,
+            Status: ContactRequestStatus.Pending,
+            SentDate: new Date(),
+          });
+        } else {
+          requestId = existing.RequestId;
+          if (existing.Status !== ContactRequestStatus.Accepted) {
+            await existing.update({
+              InitiatorName: initiatorProfile.Name,
+              InitiatorMessage: message,
+              Status: ContactRequestStatus.Pending,
+              SentDate: new Date(),
+            });
+          }
+        }
+        await RealtimeNotify.inboxRequests(receiverCmid);
+      }
+
+      // 4.3.10 RelationshipWebServiceClient.SendContactRequest reads back an int.
+      Int32Proxy.Serialize(outputStream, requestId);
+
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('SendContactRequest', e);
     }
@@ -117,10 +162,26 @@ export default class RelationshipWebService extends BaseWebService {
 
       this.debugEndpoint('AcceptContactRequest', contactRequestId, cmid, applicationId);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      // 4.3.10 expects a ContactRequestAcceptView; ActionResult 0 = success (InboxManager).
+      const result = new ContactRequestAcceptView({ ActionResult: 1, Contact: null, RequestId: contactRequestId });
+      const contactRequest = await ContactRequest.findOne({
+        where: { RequestId: contactRequestId, ReceiverCmid: cmid },
+      });
+      if (contactRequest) {
+        const initiatorProfile = await PublicProfile.findOne({ where: { Cmid: contactRequest.InitiatorCmid } });
+        if (initiatorProfile) {
+          await contactRequest.update({ Status: ContactRequestStatus.Accepted });
+          result.ActionResult = 0;
+          result.Contact = new PublicProfileView({ ...(initiatorProfile.get({ plain: true }) as PublicProfileView) });
+          // Let the initiator's client pick up the new friend without a relog.
+          await RealtimeNotify.inboxRequests(contactRequest.InitiatorCmid);
+        }
+      }
+      ContactRequestAcceptViewProxy.Serialize(outputStream, result);
+
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('AcceptContactRequest', e);
     }
@@ -140,10 +201,19 @@ export default class RelationshipWebService extends BaseWebService {
 
       this.debugEndpoint('DeclineContactRequest', contactRequestId, cmid);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      const result = new ContactRequestDeclineView({ ActionResult: 1, RequestId: contactRequestId });
+      const contactRequest = await ContactRequest.findOne({
+        where: { RequestId: contactRequestId, ReceiverCmid: cmid },
+      });
+      if (contactRequest) {
+        await contactRequest.update({ Status: ContactRequestStatus.Refused });
+        result.ActionResult = 0;
+      }
+      ContactRequestDeclineViewProxy.Serialize(outputStream, result);
+
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('DeclineContactRequest', e);
     }
@@ -163,10 +233,23 @@ export default class RelationshipWebService extends BaseWebService {
 
       this.debugEndpoint('DeleteContact', cmid, contactCmid);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      const removed = await ContactRequest.destroy({
+        where: {
+          [Op.or]: [
+            { ReceiverCmid: cmid, InitiatorCmid: contactCmid },
+            { InitiatorCmid: cmid, ReceiverCmid: contactCmid },
+          ],
+          Status: ContactRequestStatus.Accepted,
+        },
+      });
+      EnumProxy.Serialize<MemberOperationResult>(
+        outputStream,
+        removed ? MemberOperationResult.Ok : MemberOperationResult.InvalidCmid,
+      );
+
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('DeleteContact', e);
     }
@@ -188,10 +271,13 @@ export default class RelationshipWebService extends BaseWebService {
 
       this.debugEndpoint('MoveContactToGroup', cmid, contactCmid, previousGroupId, newGroupId);
 
-      throw new Error('Not Implemented');
-      // return isEncrypted
-      //   ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
-      //   : outputStream;
+      // Contact groups are not stored server-side (GetContactsByGroups returns one group),
+      // so there is nothing to move; report success so the client keeps its local grouping.
+      EnumProxy.Serialize<MemberOperationResult>(outputStream, MemberOperationResult.Ok);
+
+      return isEncrypted
+        ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
+        : outputStream;
     } catch (e) {
       this.handleEndpointError('MoveContactToGroup', e);
     }

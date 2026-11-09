@@ -109,6 +109,16 @@ namespace NekoNexus.Realtime.Server {
 				}
 			}
 
+			// Android (4.3.10) -> PC lobby chat relay, settable without a custom yml
+			// (the Docker image ships its own NekoNexus.Realtime.yml). true/false/1/0.
+			var guestChatOverride = Environment.GetEnvironmentVariable("NEKONEXUS_LEGACY_GUEST_CHAT");
+			if (!string.IsNullOrWhiteSpace(guestChatOverride)) {
+				var value = guestChatOverride.Trim();
+				var enabled = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase) || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
+				Log.Info($"Overriding EnableLegacyGuestChat -> {enabled} (NEKONEXUS_LEGACY_GUEST_CHAT)");
+				Configuration.EnableLegacyGuestChat = enabled;
+			}
+
 			OnBeforeSetup();
 
 			PeerConfiguration = new PeerConfiguration(

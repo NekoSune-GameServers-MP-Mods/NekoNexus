@@ -117,6 +117,7 @@ namespace NekoNexus.Realtime.Server.Comm {
 							var messageId = Convert.ToInt32(data["MessageId"]);
 							LobbyManager.Instance.Peers.FirstOrDefault(_ => _.Actor.Cmid == targetCmid)
 								?.LobbyEventSender.SendUpdateInboxMessages(messageId);
+							Legacy.LegacyCommPeer.NotifyInboxMessage(targetCmid, messageId);
 						} catch (Exception ex) { Log.Error("NotifyInboxMessage failed", ex); }
 						break;
 					}
@@ -128,6 +129,7 @@ namespace NekoNexus.Realtime.Server.Comm {
 							var targetCmid = Convert.ToInt64(data["TargetCmid"]);
 							LobbyManager.Instance.Peers.FirstOrDefault(_ => _.Actor.Cmid == targetCmid)
 								?.LobbyEventSender.SendUpdateInboxRequests();
+							Legacy.LegacyCommPeer.NotifyInboxRequests(targetCmid);
 						} catch (Exception ex) { Log.Error("NotifyInboxRequests failed", ex); }
 						break;
 					}

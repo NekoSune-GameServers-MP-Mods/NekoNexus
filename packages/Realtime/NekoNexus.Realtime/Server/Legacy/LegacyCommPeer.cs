@@ -340,6 +340,28 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			foreach (var peer in LobbyPeers()) peer.SendFullPlayerList();
 		}
 
+		// ClientCommCenter methods that make the 4.3.10 client re-fetch from the web services.
+		private const byte OnUpdateInboxRequests = 37;   // ()
+		private const byte OnUpdateFriendsList = 38;     // ()
+		private const byte OnUpdateInboxMessages = 39;   // (int messageId)
+
+		/// <summary>New mail for an Android player: refresh their inbox now (same as PC).</summary>
+		public static void NotifyInboxMessage(long cmid, int messageId) {
+			foreach (var peer in PeersWithCmid(cmid)) peer.SendCall(OnUpdateInboxMessages, messageId);
+		}
+
+		/// <summary>A friend/clan request for an Android player: refresh requests and friends now.</summary>
+		public static void NotifyInboxRequests(long cmid) {
+			foreach (var peer in PeersWithCmid(cmid)) {
+				peer.SendCall(OnUpdateInboxRequests);
+				peer.SendCall(OnUpdateFriendsList);
+			}
+		}
+
+		private static List<LegacyCommPeer> PeersWithCmid(long cmid) {
+			lock (RegistryLock) return ConnectedPeers.Where(p => p.Cmid == cmid).ToList();
+		}
+
 		/// <summary>Android players as PC CommActorInfo entries, for the PC lobby roster.</summary>
 		public static List<CommActorInfo> GetLobbyActorInfos(ICollection<int> excludeCmids = null) {
 			var result = new List<CommActorInfo>();
