@@ -89,6 +89,9 @@ namespace NekoNexus.Realtime.Server.Comm {
 						foreach (var peer in LobbyManager.Instance.Peers) {
 							peer.LobbyEventSender.SendLobbyChatMessage(message.Cmid, message.Name, trimmed);
 						}
+						// The same PC/master chat feed is translated into Android 4.3.10
+						// MessageToAll RPCs for peers with a discovered comm instance ID.
+						Legacy.LegacyCommPeer.BroadcastLobbyChat(message.Cmid, message.Name, trimmed);
 						break;
 					case PacketType.BanPlayer: {
 						var data = (Dictionary<string, object>)e.Data;

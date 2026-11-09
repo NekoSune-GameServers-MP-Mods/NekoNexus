@@ -2,6 +2,7 @@ using log4net;
 using Photon.SocketServer;
 using PhotonHostRuntimeInterfaces;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace NekoNexus.Realtime.Server.Legacy {
@@ -17,6 +18,8 @@ namespace NekoNexus.Realtime.Server.Legacy {
 	/// </summary>
 	public abstract class LegacyPeer : ClientPeer {
 		protected static readonly ILog Log = LogManager.GetLogger("LegacyPeer");
+
+		private readonly HashSet<string> unseenLegacyMessages = new HashSet<string>();
 
 		public int Cmid { get; }
 		public string ClientVersion { get; private set; } = "4.3.10";
@@ -41,7 +44,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				if (request.OperationCode == LegacyOperationCode.MessageToApplication) {
 					HandleApplicationMessage(request);
 				} else if (!OnLegacyOperation(request)) {
-					Log.Debug($"[{Name}] cmid {Cmid}: legacy opcode 0x{request.OperationCode:X2} not supported yet (params: {DescribeKeys(request)})");
+					WarnUnsupportedOnce($"opcode:0x{request.OperationCode:X2}", $"legacy opcode 0x{request.OperationCode:X2} not supported yet (params: {DescribeKeys(request)})");
 				}
 			} catch (Exception ex) {
 				Log.Error($"[{Name}] cmid {Cmid}: error handling legacy opcode 0x{request.OperationCode:X2}", ex);
@@ -67,7 +70,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			}
 
 			if (!OnApplicationMethod(methodId, args, out var reply)) {
-				Log.Debug($"[{Name}] cmid {Cmid}: application method {methodId} not supported yet (args: {DescribeArgs(args)})");
+				WarnUnsupportedOnce($"method:{methodId}", $"application method {methodId} not supported yet (args: {DescribeArgs(args)})");
 				return;
 			}
 
@@ -91,6 +94,15 @@ namespace NekoNexus.Realtime.Server.Legacy {
 
 		protected override void OnDisconnect(DisconnectReason reasonCode, string reasonDetail) {
 			Log.Info($"[{Name}] 4.3.10 client cmid {Cmid} disconnected ({reasonCode})");
+		}
+
+		// A single warning per unknown legacy method/opcode per connection makes
+		// Android's missing lobby/chat/gameplay mappings visible in release logs
+		// without flooding the server's log on every frame or leaking chat text.
+		private void WarnUnsupportedOnce(string key, string message) {
+			if (unseenLegacyMessages.Add(key)) {
+				Log.Warn($"[{Name}] cmid {Cmid}: {message}");
+			}
 		}
 
 		private static string DescribeKeys(OperationRequest request) =>

@@ -50,6 +50,15 @@ export default class ApplicationWebService extends BaseWebService {
   }
   // protected static get ServiceInterface(): string { return 'IApplicationWebServiceContract';
 
+  /** Mobile devices cannot connect to a loopback/bind-all/blank server address. */
+  static isConnectableAndroidServer(server: { IP?: string | null; Port?: number | null }): boolean {
+    const host = String(server?.IP ?? '').trim().toLowerCase();
+    const port = Number(server?.Port);
+    return host.length > 0 &&
+      !['127.0.0.1', 'localhost', '::1', '0.0.0.0', '::', '[::1]'].includes(host) &&
+      Number.isInteger(port) && port >= 1 && port <= 65535;
+  }
+
   static supportedClientVersions: string[] = ['4.3.10'];
   static supportedClientChannels: ChannelType[] = [
     ChannelType.WindowsStandalone,
@@ -116,7 +125,13 @@ export default class ApplicationWebService extends BaseWebService {
         raw: true,
       });
 
-      ListProxy.Serialize(outputStream, servers, PhotonViewProxy.Serialize);
+      // The original Android client may use GetPhotonServers as well as
+      // AuthenticateApplication. Never send it 127.0.0.1/blank endpoints,
+      // which point back to the handset and produce empty-connection errors.
+      const visibleServers = applicationView?.Channel === ChannelType.Android
+        ? servers.filter(ApplicationWebService.isConnectableAndroidServer)
+        : servers;
+      ListProxy.Serialize(outputStream, visibleServers, PhotonViewProxy.Serialize);
       return isEncrypted
         ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
         : outputStream;
@@ -163,15 +178,18 @@ export default class ApplicationWebService extends BaseWebService {
           outputStream,
           new AuthenticateApplicationView({
             IsEnabled: true,
-            GameServers: (await PhotonServer.findAll({ where: { UsageType: PhotonUsageType.All }, raw: true })).map(withServerRegionFlag),
+            GameServers: (await PhotonServer.findAll({ where: { UsageType: PhotonUsageType.All }, raw: true }))
+              .filter((server) => channelType !== ChannelType.Android || ApplicationWebService.isConnectableAndroidServer(server))
+              .map(withServerRegionFlag),
             CommServer:
               (
                 await PhotonServer.findAll({
-                  where: { UsageType: PhotonUsageType.CommServer },
+                  where: { UsageType: PhotonUsageType.CommServer, Enabled: { [Op.ne]: false } },
                   order: [['MinLatency', 'ASC']],
                   raw: true,
                 })
-              ).map(withServerRegionFlag)[0] ?? null,
+              ).filter((server) => channelType !== ChannelType.Android || ApplicationWebService.isConnectableAndroidServer(server))
+               .map(withServerRegionFlag)[0] ?? null,
             WarnPlayer: !ApplicationWebService.supportedClientVersions.includes(clientVersion),
             EncryptionInitVector: this.EncryptionInitVector,
             EncryptionPassPhrase: this.EncryptionPassPhrase,

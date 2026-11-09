@@ -14,11 +14,14 @@ namespace NekoNexus.Transport {
 		OperationResponse = 3,
 	}
 
-	// Value type tags for the Dictionary<byte, object> payload. UberStrike only ever
+	// Value type tags for the Dictionary<byte, object> payload. UberStrike 4.7.1 only ever
 	// puts byte[] across the wire (its own serialized message blobs), plus string/int
-	// for operation-response error reporting. The rest are included for completeness.
+	// for operation-response error reporting. The 4.3.10 (Android) client also receives a
+	// System.Collections.Hashtable in its room-list events (key 42), hence the Hashtable tag.
+	// Old peers that do not know a tag fail to decode that one message only.
 	internal enum WireTag : byte {
 		Null = 0, ByteArray = 1, String = 2, Int = 3, Short = 4, Byte = 5, Bool = 6, Long = 7, Float = 8, Double = 9,
+		Hashtable = 10,
 	}
 
 	// A decoded envelope. This is the single, transport-agnostic representation shared by
@@ -109,6 +112,14 @@ namespace NekoNexus.Transport {
 				case long l: w.Write((byte)WireTag.Long); w.Write(l); break;
 				case float f: w.Write((byte)WireTag.Float); w.Write(f); break;
 				case double d: w.Write((byte)WireTag.Double); w.Write(d); break;
+				case System.Collections.Hashtable h:
+					w.Write((byte)WireTag.Hashtable);
+					w.Write(h.Count);
+					foreach (System.Collections.DictionaryEntry e in h) {
+						WriteValue(w, e.Key);
+						WriteValue(w, e.Value);
+					}
+					break;
 				default: throw new NotSupportedException("Unsupported wire value type: " + value.GetType().FullName);
 			}
 		}
@@ -126,6 +137,17 @@ namespace NekoNexus.Transport {
 				case WireTag.Long: return r.ReadInt64();
 				case WireTag.Float: return r.ReadSingle();
 				case WireTag.Double: return r.ReadDouble();
+				case WireTag.Hashtable: {
+					int n = r.ReadInt32();
+					if (n < 0 || n > 65536) throw new NotSupportedException("Bad hashtable size: " + n);
+					var h = new System.Collections.Hashtable(n);
+					for (int k = 0; k < n; k++) {
+						var key = ReadValue(r);
+						var value = ReadValue(r);
+						if (key != null) h[key] = value;
+					}
+					return h;
+				}
 				default: throw new NotSupportedException("Unknown wire tag: " + tag);
 			}
 		}
