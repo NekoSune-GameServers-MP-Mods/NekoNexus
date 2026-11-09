@@ -1,0 +1,33 @@
+name: Validate Android legacy realtime changes
+
+on:
+  pull_request:
+    paths:
+      - 'packages/Realtime/**'
+      - 'shims/**'
+      - '.github/workflows/android-legacy-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  realtime-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - name: Build transport shims
+        shell: pwsh
+        run: |
+          dotnet build shims/UnityEngine.Shim/UnityEngine.Shim.csproj -c Release
+          dotnet build shims/PhotonHostRuntimeInterfaces.Shim/PhotonHostRuntimeInterfaces.Shim.csproj -c Release
+          dotnet build shims/Photon.SocketServer.Shim/Photon.SocketServer.Shim.csproj -c Release
+          dotnet build shims/Photon3Unity3D.Shim/Photon3Unity3D.Shim.csproj -c Release
+      - name: Build realtime host and server
+        shell: pwsh
+        run: dotnet build packages/Realtime/NekoNexus.Realtime.Host/NekoNexus.Realtime.Host.csproj -c Release
