@@ -35,10 +35,15 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				|| !(instanceObj is short instanceId)) return false;
 			if (!request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var methodObj)
 				|| !(methodObj is byte methodId)) return false;
-			// ClientCommCenter shares its network object instance ID among lobby methods.
-			// Remember it even when guest chat is disabled, for PC -> Android chat.
+			// IDs taken from Android 4.3.10 ClientCommCenter's RPC attributes.
+			// Capturing its instance ID on a roster/chat message lets a silent
+			// Android user receive PC lobby chat before sending a message.
+			if (methodId == 2 || methodId == 3 || methodId == 4 ||
+				methodId == 23 || methodId == 24 || methodId == 25 ||
+				methodId == 26 || methodId == 42) {
+				lobbyInstanceId = instanceId;
+			}
 			if (methodId != LobbyChatMethodId) return false;
-			lobbyInstanceId = instanceId;
 
 			// Client 4.3.10 sends a numeric CMID in the transport application id.
 			// This value is spoofable: there is no authenticated user session here.
