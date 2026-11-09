@@ -91,3 +91,15 @@ Why the shim fixes matter on Android:
   hidden.
 * On the server side, 4.3.10 clients also need the legacy protocol layer described in
   `docs/android-4.3.10-realtime-protocol.md`.
+
+### Android game list: rebuild the Photon shim
+
+The Android room list needs Hashtable support in the transport shim. Build it and swap it into the
+APK (the fixer then skips its byte patches; the shim source already has those fixes):
+
+```
+dotnet build shims/Photon3Unity3D.Shim/Photon3Unity3D.Shim.csproj -c Release
+python packages/Client/Android/fix_android_apk.py NekoNexus.apk NekoNexus-crossplay.apk ^
+    --web-service http://HOST:8080/1.0.2/ --content http://HOST:8081/UberStrike/ ^
+    --photon-shim shims/Photon3Unity3D.Shim/bin/Release/net35/Photon3Unity3D.dll
+```

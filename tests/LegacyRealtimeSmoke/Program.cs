@@ -54,6 +54,18 @@ internal static class Program {
         Assert(meta.RoomId.ToBytes().Length == LegacyRoomId.Size, "room id size");
         Assert(LegacyEventCode.NetworkMessage == 0, "remote calls use event code 0");
 
+        // Game list: List<RoomData> (6F) of GameMetaData (67) built from PC rooms.
+        var game = new LegacyGameMetaData {
+            Name = "PC TDM", MaxPlayers = 16, InPlayers = 3,
+            RoomId = new LegacyRoomId { Number = 1, Address = new byte[] { 75, 119, 148, 51, 0x14, 0x23 } },
+            MapId = 13, TimeLimitSeconds = 600, SplatLimit = 50, GameMode = LegacyGameMetaData.ModeTeamDeathMatch, LevelMax = 80, PlayersInGame = 3
+        };
+        var gameBytes = LegacySerialization.ToBytes(new System.Collections.Generic.List<LegacyRoomMetaData> { game });
+        Assert(gameBytes[0] == 0x6F && gameBytes[1] == 0 && gameBytes[2] == 1 && gameBytes[3] == 0x67, "room list header");
+        Assert(gameBytes.Length == 53, "game metadata length");
+        var gameBack = (LegacyGameMetaData)((System.Collections.Generic.List<LegacyRoomMetaData>)LegacySerialization.ToObjects(gameBytes)[0])[0];
+        Assert(gameBack.MapId == 13 && gameBack.GameMode == 100 && gameBack.RoomId.Server == "75.119.148.51:5155" && gameBack.SplatLimit == 50, "game metadata round trip");
+
         Console.WriteLine("Android 4.3.10 legacy codec smoke tests passed.");
         return 0;
     }

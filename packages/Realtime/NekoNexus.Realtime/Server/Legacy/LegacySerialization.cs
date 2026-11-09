@@ -36,6 +36,10 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			public const byte CommActorInfo = 0x2E;
 			public const byte SyncObject = 0x30;
 			public const byte ListSyncObject = 0x35;
+			/// <summary>UberStrike GameMetaData (a RoomMetaData with map / mode / limits).</summary>
+			public const byte GameMetaData = 0x67;
+			/// <summary>List of RoomMetaData / GameMetaData, each item prefixed with its own type.</summary>
+			public const byte ListRoomData = 0x6F;
 			/// <summary>Named PerformanceData in CmuneDataType; carries ServerLoadData.</summary>
 			public const byte ServerLoadData = 0x2F;
 		}
@@ -70,6 +74,12 @@ namespace NekoNexus.Realtime.Server.Legacy {
 					WriteFloat(bytes, load.MaxPlayerCount);
 					break;
 				case LegacyRoomId room: bytes.Add(Type.RoomId); room.Write(bytes); break;
+				case LegacyRoomMetaData meta: meta.WriteTyped(bytes); break;
+				case List<LegacyRoomMetaData> rooms:
+					bytes.Add(Type.ListRoomData);
+					WriteBigEndian(bytes, BitConverter.GetBytes((short)rooms.Count));
+					foreach (var item in rooms) item.WriteTyped(bytes);
+					break;
 				case LegacySyncObject sync: bytes.Add(sync.AsCommActorInfo ? Type.CommActorInfo : Type.SyncObject); sync.Write(bytes); break;
 				case List<LegacySyncObject> list:
 					bytes.Add(Type.ListSyncObject);
@@ -164,6 +174,18 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				case Type.Vector3: return new[] { ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i) };
 				case Type.Quaternion: return new[] { ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i) };
 				case Type.RoomMetaData: return LegacyRoomMetaData.Read(bytes, ref i);
+				case Type.GameMetaData: return LegacyGameMetaData.Read(bytes, ref i);
+				case Type.ListRoomData: {
+					var n = ReadCount(bytes, ref i);
+					var list = new List<LegacyRoomMetaData>(n);
+					for (var k = 0; k < n; k++) {
+						var t = ReadByte(bytes, ref i);
+						if (t == Type.RoomMetaData) list.Add(LegacyRoomMetaData.Read(bytes, ref i));
+						else if (t == Type.GameMetaData) list.Add(LegacyGameMetaData.Read(bytes, ref i));
+						else throw new LegacyProtocolException($"unexpected room type 0x{t:X2} in room list");
+					}
+					return list;
+				}
 				case Type.RoomId: return LegacyRoomId.Read(bytes, ref i);
 				case Type.CommActorInfo: {
 					var sync = LegacySyncObject.Read(bytes, ref i);
@@ -238,6 +260,8 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			return bytes[i++];
 		}
 
+		public static byte[] ReadBigEndianPublic(byte[] bytes, ref int i, int count) => ReadBigEndian(bytes, ref i, count);
+
 		private static byte[] ReadBigEndian(byte[] bytes, ref int i, int count) {
 			Require(bytes, i, count);
 			var value = new byte[count];
@@ -287,7 +311,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 	}
 
 	/// <summary>UberStrike.Realtime.UnitySdk.RoomMetaData as sent with PhotonGameJoin (0x58).</summary>
-	public sealed class LegacyRoomMetaData {
+	public class LegacyRoomMetaData {
 		public string Name { get; set; } = "";
 		public string Password { get; set; } = "";
 		public byte MaxPlayers { get; set; }
@@ -295,16 +319,89 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		public byte Tag { get; set; }
 		public LegacyRoomId RoomId { get; set; } = new LegacyRoomId();
 
-		public static LegacyRoomMetaData Read(byte[] bytes, ref int i) => new LegacyRoomMetaData {
-			Name = LegacySerialization.ReadSmallString(bytes, ref i),
-			Password = LegacySerialization.ReadSmallString(bytes, ref i),
-			MaxPlayers = LegacySerialization.ReadRawByte(bytes, ref i),
-			InPlayers = LegacySerialization.ReadRawByte(bytes, ref i),
-			Tag = LegacySerialization.ReadRawByte(bytes, ref i),
-			RoomId = LegacyRoomId.Read(bytes, ref i),
-		};
+		public static LegacyRoomMetaData Read(byte[] bytes, ref int i) {
+			var meta = new LegacyRoomMetaData();
+			meta.ReadBase(bytes, ref i);
+			return meta;
+		}
+
+		protected void ReadBase(byte[] bytes, ref int i) {
+			Name = LegacySerialization.ReadSmallString(bytes, ref i);
+			Password = LegacySerialization.ReadSmallString(bytes, ref i);
+			MaxPlayers = LegacySerialization.ReadRawByte(bytes, ref i);
+			InPlayers = LegacySerialization.ReadRawByte(bytes, ref i);
+			Tag = LegacySerialization.ReadRawByte(bytes, ref i);
+			RoomId = LegacyRoomId.Read(bytes, ref i);
+		}
+
+		protected void WriteBase(List<byte> bytes) {
+			LegacySerialization.WriteSmallString(bytes, Name);
+			LegacySerialization.WriteSmallString(bytes, Password);
+			bytes.Add(MaxPlayers);
+			bytes.Add(InPlayers);
+			bytes.Add(Tag);
+			(RoomId ?? new LegacyRoomId()).Write(bytes);
+		}
+
+		/// <summary>[type byte][payload], as RealtimeSerialization writes it.</summary>
+		public virtual void WriteTyped(List<byte> bytes) {
+			bytes.Add(LegacySerialization.Type.RoomMetaData);
+			WriteBase(bytes);
+		}
 
 		public override string ToString() => $"'{Name}' {RoomId} ({InPlayers}/{MaxPlayers})";
+	}
+
+	/// <summary>
+	/// UberStrike.Realtime.UnitySdk.GameMetaData (CmuneDataType 0x67): RoomMetaData followed by
+	/// [int16 map][int32 time limit s][int32 splat limit][int16 game mode][int32 game flags]
+	/// [byte level min][byte level max][int32 players in game]. Game modes are the 4.3.10 ids
+	/// (TeamDeathMatch 100, DeathMatch 101, TeamElimination 106).
+	/// </summary>
+	public sealed class LegacyGameMetaData : LegacyRoomMetaData {
+		public const short ModeTeamDeathMatch = 100;
+		public const short ModeDeathMatch = 101;
+		public const short ModeTeamElimination = 106;
+		/// <summary>RoomMetaData number the client joins on a game server to get its room list.</summary>
+		public const int LobbyRoomNumber = 66;
+
+		public short MapId { get; set; }
+		public int TimeLimitSeconds { get; set; }
+		public int SplatLimit { get; set; }
+		public short GameMode { get; set; }
+		public int GameFlags { get; set; }
+		public byte LevelMin { get; set; }
+		public byte LevelMax { get; set; }
+		public int PlayersInGame { get; set; }
+
+		public static new LegacyGameMetaData Read(byte[] bytes, ref int i) {
+			var meta = new LegacyGameMetaData();
+			meta.ReadBase(bytes, ref i);
+			meta.MapId = BitConverter.ToInt16(LegacySerialization.ReadBigEndianPublic(bytes, ref i, 2), 0);
+			meta.TimeLimitSeconds = LegacySerialization.ReadInt(bytes, ref i);
+			meta.SplatLimit = LegacySerialization.ReadInt(bytes, ref i);
+			meta.GameMode = BitConverter.ToInt16(LegacySerialization.ReadBigEndianPublic(bytes, ref i, 2), 0);
+			meta.GameFlags = LegacySerialization.ReadInt(bytes, ref i);
+			meta.LevelMin = LegacySerialization.ReadRawByte(bytes, ref i);
+			meta.LevelMax = LegacySerialization.ReadRawByte(bytes, ref i);
+			meta.PlayersInGame = LegacySerialization.ReadInt(bytes, ref i);
+			return meta;
+		}
+
+		public override void WriteTyped(List<byte> bytes) {
+			bytes.Add(LegacySerialization.Type.GameMetaData);
+			WriteBase(bytes);
+			LegacySerialization.WriteRawShortBigEndian(bytes, MapId);
+			LegacySerialization.WriteInt(bytes, TimeLimitSeconds);
+			LegacySerialization.WriteInt(bytes, SplatLimit);
+			LegacySerialization.WriteRawShortBigEndian(bytes, GameMode);
+			LegacySerialization.WriteInt(bytes, GameFlags);
+			bytes.Add(LevelMin);
+			bytes.Add(LevelMax);
+			LegacySerialization.WriteInt(bytes, PlayersInGame);
+		}
+
+		public override string ToString() => $"{base.ToString()} map {MapId} mode {GameMode}";
 	}
 
 	/// <summary>

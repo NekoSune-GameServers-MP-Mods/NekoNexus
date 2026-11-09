@@ -129,13 +129,37 @@ claims is ignored, and messages are rate-limited (750 ms), stripped of control c
 140 characters and profanity-filtered. A proper fix is a login ticket from the web services that
 the patched APK passes on connect.
 
+## Game list (implemented)
+
+When a player picks a server on the Play page, `LobbyConnectionManager` joins
+`RoomMetaData(66, "The Lobby", <that server>)` on the **game** server with `PhotonGameJoin`.
+`LegacyGamePeer` accepts it and, every 5 seconds while joined, pushes event **3**
+`{42: Hashtable{(byte)122: ToBytes(List<RoomData>)}}`. The list type is `6F`: `[int16 count]`, then
+each item with its own type byte (`28` RoomMetaData or `67` GameMetaData).
+
+GameMetaData (`67`) = RoomMetaData + `[int16 map][int32 time limit s][int32 splat limit]`
+`[int16 game mode][int32 flags][byte level min][byte level max][int32 players in game]`.
+4.3.10 game modes: TeamDeathMatch `100`, DeathMatch `101`, TeamElimination `106`
+(4.7.1 `GameModeType` 2 / 1 / 3). Flags `0x01..0x10` (LowGravity, Instakill, NinjaArena,
+SniperArena, CannonArena) are the same bits in both versions.
+
+Rooms come from the same `GameRoomManager` PC players use; password rooms are left out (the 4.3.10
+client checks passwords itself). The CmuneRoomID address is the one the client joined the lobby
+with. Joining a match (`PhotonGameJoin` with a GameMetaData) is refused with
+`Android players cannot join PC matches yet.` until phase 3/4 exist.
+
+**Needs the new APK:** the Hashtable has to cross the NekoNexus wire, which only the updated
+`shims/_shared/NekoNexusWire.cs` (tag 10) can carry. Build `shims/Photon3Unity3D.Shim` and put it
+into the APK with `fix_android_apk.py --photon-shim <Photon3Unity3D.dll>`. An old APK receiving the
+room list logs an unknown wire tag and shows no games.
+
 ## Status
 
 | Phase | Scope | State |
 |-------|-------|-------|
 | 1 | Accept 4.3.10 peers, handshake, server load (servers appear with live PC counts) | **Done** |
 | 2a | Comm: join, roster both ways, lobby chat both ways | **Done** (`LegacyCommPeer`, unit-tested) |
-| 2b | Game list: events 3/4/5 with a Hashtable (needs Hashtable support in `NekoNexusWire` on **both** shims, so a new APK) and RoomData/GameData (`67`) for PC rooms | To do |
+| 2b | Game list: PC rooms shown on Android (event 3, Hashtable over the wire, GameMetaData) | **Done** (needs the rebuilt APK shim) |
 | 3 | Join/leave (`0x58`/`0x59`) on the game server into the shared `GameRoomManager` rooms; dynamic network-id registration (RMI network class 1, methods 2/3 -> `RecieveRegistrationConfirmation(instanceId, networkId)`) for the game-mode classes (`FpsGameMode`, `TeamDeathMatchGameMode` 100, `DeathMatchGameMode` 101, `TeamEliminationGameMode` 106) | To do |
 | 4 | In-match: about 40 game RPCs (`FpsGameMode` 20, `ClientGameMode` 7, mode classes 11) and the game types (`65`-`6F`: ActorInfo, GameData, Transform, DamageEvent, EndOfMatch ...) translated to and from the 4.7.1 room protocol, plus item-id / map / mode mapping between 4.3.10 and 4.7.1 | To do |
 

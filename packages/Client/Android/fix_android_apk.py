@@ -231,6 +231,9 @@ def main() -> int:
     parser.add_argument("--password", default=os.environ.get("NEKONEXUS_KEYSTORE_PASSWORD", "nekonexus"),
                         help="keystore password (or set NEKONEXUS_KEYSTORE_PASSWORD)")
     parser.add_argument("--no-sign", action="store_true", help="write an unsigned APK")
+    parser.add_argument("--photon-shim", type=pathlib.Path,
+                        help="use this freshly built shims/Photon3Unity3D.Shim DLL instead of patching the one in "
+                             "the APK (needed for the Android game list: it adds Hashtable support to the wire)")
     args = parser.parse_args()
 
     source_path = args.apk.resolve()
@@ -249,10 +252,18 @@ def main() -> int:
         replacements: dict[str, bytes] = {}
         config, notes = patch_config(source.read(CONFIG_ENTRY), web, content)
         replacements[CONFIG_ENTRY] = config
-        try:
-            shim, shim_notes = patch_photon_shim(source.read(PHOTON_ENTRY))
-        except ValueError as error:
-            parser.error(str(error))
+        if args.photon_shim:
+            shim = args.photon_shim.read_bytes()
+            if b"LiteNetLib" not in shim or b"NekoNexus" not in shim:
+                parser.error(f"{args.photon_shim} is not a NekoNexus Photon3Unity3D shim build")
+            if "Bad hashtable size".encode("utf-16-le") not in shim:
+                print(" ! warning: this shim build has no Hashtable wire support (Android game list will be empty)")
+            shim_notes = [f"Photon3Unity3D.dll replaced with {args.photon_shim.name} ({len(shim)} bytes)"]
+        else:
+            try:
+                shim, shim_notes = patch_photon_shim(source.read(PHOTON_ENTRY))
+            except ValueError as error:
+                parser.error(str(error))
         replacements[PHOTON_ENTRY] = shim
         notes += shim_notes
 

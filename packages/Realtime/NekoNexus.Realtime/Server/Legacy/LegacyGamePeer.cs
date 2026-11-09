@@ -1,15 +1,169 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 using NekoNexus.Realtime.Server.Game;
 using Photon.SocketServer;
+using PhotonHostRuntimeInterfaces;
+using UberStrike.Core.Models;
+using UberStrike.Core.Types;
 
 namespace NekoNexus.Realtime.Server.Legacy {
 	/// <summary>
 	/// 4.3.10 client on a game server. Server load is reported from the same room manager that
 	/// serves PC players, so Android and PC see identical player/room counts for each server.
+	///
+	/// Game list: when a player picks a server, the 4.3.10 LobbyConnectionManager joins
+	/// RoomMetaData(66, "The Lobby", server) on it with PhotonGameJoin. While joined, the server
+	/// pushes room-list events (code 3 = clear and refill) with {42: Hashtable{122: List&lt;GameMetaData&gt;}}.
+	/// The list is built from the same <see cref="GameRoomManager"/> PC players use, so Android
+	/// players see the PC matches. Joining one of them is not translated yet: the join is refused
+	/// with a message instead of leaving the client hanging.
 	/// </summary>
 	public class LegacyGamePeer : LegacyPeer {
+		private const int RefreshMilliseconds = 5000;
+
+		private readonly object stateLock = new object();
+		private Timer refreshTimer;
+		private LegacyRoomId lobbyRoomId;
+
 		public LegacyGamePeer(InitRequest initRequest) : base(initRequest) { }
 
 		protected override string Name => "LegacyGame";
+
+		// ------------------------------------------------------------------ operations
+
+		protected override bool OnLegacyOperation(OperationRequest request) {
+			switch (request.OperationCode) {
+				case LegacyOperationCode.PhotonGameJoin:
+					HandleJoin(request);
+					return true;
+				case LegacyOperationCode.PhotonGameLeave:
+					StopRoomList();
+					SendOperationResponse(new OperationResponse(LegacyOperationCode.PhotonGameLeave) { ReturnCode = 0 }, new SendParameters());
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		private void HandleJoin(OperationRequest request) {
+			LegacyRoomMetaData room = null;
+			if (request.Parameters.TryGetValue(LegacyParameterKey.Bytes, out var raw) && raw is byte[] bytes) {
+				try {
+					var args = LegacySerialization.ToObjects(bytes);
+					room = args.Length > 0 ? args[0] as LegacyRoomMetaData : null;
+				} catch (LegacyProtocolException ex) {
+					Log.Warn($"[{Name}] cmid {Cmid}: unreadable join request: {ex.Message}");
+				}
+			}
+
+			if (room == null || Cmid <= 0) {
+				RefuseJoin("Invalid join request.");
+				return;
+			}
+
+			if (room.RoomId.Number != LegacyGameMetaData.LobbyRoomNumber) {
+				Log.Info($"[{Name}] cmid {Cmid}: tried to join game {room} - not supported for 4.3.10 yet");
+				RefuseJoin("Android players cannot join PC matches yet.");
+				return;
+			}
+
+			var response = new OperationResponse(LegacyOperationCode.PhotonGameJoin) { ReturnCode = 0 };
+			response.Parameters[LegacyParameterKey.ActorNr] = Cmid;
+			response.Parameters[LegacyParameterKey.GameId] = room.RoomId.ToBytes();
+			response.Parameters[LegacyParameterKey.InitRoom] = false;
+			response.Parameters[LegacyParameterKey.ServerTicks] = (long)Environment.TickCount;
+			SendOperationResponse(response, new SendParameters());
+
+			Log.Info($"[{Name}] cmid {Cmid}: joined the game lobby of {room.RoomId.Server}");
+			StartRoomList(room.RoomId);
+		}
+
+		private void RefuseJoin(string message) {
+			SendOperationResponse(new OperationResponse(LegacyOperationCode.PhotonGameJoin) {
+				ReturnCode = 1,
+				DebugMessage = message,
+			}, new SendParameters());
+		}
+
+		// ------------------------------------------------------------------ room list
+
+		private void StartRoomList(LegacyRoomId lobby) {
+			lock (stateLock) {
+				lobbyRoomId = lobby;
+				refreshTimer?.Dispose();
+				refreshTimer = new Timer(_ => SendRoomList(), null, 0, RefreshMilliseconds);
+			}
+		}
+
+		private void StopRoomList() {
+			lock (stateLock) {
+				refreshTimer?.Dispose();
+				refreshTimer = null;
+				lobbyRoomId = null;
+			}
+		}
+
+		private void SendRoomList() {
+			LegacyRoomId lobby;
+			lock (stateLock) lobby = lobbyRoomId;
+			if (lobby == null) return;
+
+			try {
+				var rooms = BuildRoomList(GameServerApplication.Instance.RoomManager.Rooms.Values.Select(r => r.MetaData).ToList(), lobby.Address);
+				var table = new Hashtable { { LegacyParameterKey.LobbyRoomUpdate, LegacySerialization.ToBytes(rooms) } };
+				SendEvent(new EventData(LegacyEventCode.RoomListUpdate, new Dictionary<byte, object> {
+					{ LegacyParameterKey.Data, table }
+				}), new SendParameters());
+			} catch (Exception ex) {
+				Log.Warn($"[{Name}] cmid {Cmid}: failed to send room list", ex);
+			}
+		}
+
+		/// <summary>PC rooms as 4.3.10 GameMetaData. Password rooms and unknown modes are left out.</summary>
+		public static List<LegacyRoomMetaData> BuildRoomList(IEnumerable<GameRoomData> pcRooms, byte[] serverAddress) {
+			var list = new List<LegacyRoomMetaData>();
+			foreach (var pc in pcRooms) {
+				if (pc == null || pc.IsPasswordProtected) continue;
+				var mode = ToLegacyGameMode(pc.GameMode);
+				if (mode == 0) continue;
+				list.Add(new LegacyGameMetaData {
+					Name = Truncate(pc.Name, 64),
+					Password = "",
+					MaxPlayers = ClampByte(pc.PlayerLimit),
+					InPlayers = ClampByte(pc.ConnectedPlayers),
+					Tag = 0,
+					RoomId = new LegacyRoomId { Number = pc.Number, Address = serverAddress ?? new byte[6] },
+					MapId = (short)pc.MapID,
+					TimeLimitSeconds = pc.TimeLimit,
+					SplatLimit = pc.KillLimit,
+					GameMode = mode,
+					GameFlags = pc.GameFlags & 0x1F, // LowGravity .. CannonArena exist in 4.3.10
+					LevelMin = ClampByte(pc.LevelMin),
+					LevelMax = ClampByte(pc.LevelMax),
+					PlayersInGame = pc.ConnectedPlayers,
+				});
+			}
+			return list;
+		}
+
+		public static short ToLegacyGameMode(GameModeType mode) {
+			switch (mode) {
+				case GameModeType.DeathMatch: return LegacyGameMetaData.ModeDeathMatch;
+				case GameModeType.TeamDeathMatch: return LegacyGameMetaData.ModeTeamDeathMatch;
+				case GameModeType.EliminationMode: return LegacyGameMetaData.ModeTeamElimination;
+				default: return 0;
+			}
+		}
+
+		private static byte ClampByte(int value) => (byte)Math.Max(0, Math.Min(255, value));
+
+		private static string Truncate(string value, int max) =>
+			string.IsNullOrEmpty(value) ? "" : (value.Length <= max ? value : value.Substring(0, max));
+
+		// ------------------------------------------------------------------ application methods
 
 		protected override bool OnApplicationMethod(byte methodId, object[] args, out object[] reply) {
 			reply = null;
@@ -33,6 +187,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				default:
 					return false;
 			}
+		}
+
+		protected override void OnDisconnect(DisconnectReason reasonCode, string reasonDetail) {
+			StopRoomList();
+			base.OnDisconnect(reasonCode, reasonDetail);
 		}
 	}
 }
