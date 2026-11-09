@@ -67,6 +67,9 @@ enum WebSocketPacketType {
   // Web service -> Game servers (broadcast): admin-controlled AI fill-bots toggle (BETA, off by
   // default). { Enabled, FillTarget, MaxBots }.
   SetBotsConfig = (1 << 10) + 24,
+  // Game server -> web service (request/reply): live session of an Android (4.3.10) player,
+  // who reaches realtime with only a CMID. { Cmid } -> { SessionId } (must match WebSocket.PacketType.cs).
+  LegacySession = (1 << 10) + 25,
 }
 
 export default WebSocketPacketType;

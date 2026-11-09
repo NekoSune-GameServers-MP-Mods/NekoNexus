@@ -1,4 +1,5 @@
-using System;
+﻿using System;
+using Cmune.DataCenter.Common.Entities;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -41,7 +42,14 @@ namespace NekoNexus.Realtime.Server.Legacy {
 					return true;
 				case LegacyOperationCode.PhotonGameLeave:
 					StopRoomList();
+					LeaveMatch();
 					SendOperationResponse(new OperationResponse(LegacyOperationCode.PhotonGameLeave) { ReturnCode = 0 }, new SendParameters());
+					return true;
+				case LegacyOperationCode.MessageToServer:
+				case LegacyOperationCode.MessageToAll:
+				case LegacyOperationCode.MessageToOthers:
+				case LegacyOperationCode.MessageToPlayer:
+					RouteGameModeCall(request);
 					return true;
 				default:
 					return false;
@@ -65,8 +73,10 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			}
 
 			if (room.RoomId.Number != LegacyGameMetaData.LobbyRoomNumber) {
-				Log.Info($"[{Name}] cmid {Cmid}: tried to join game {room} - not supported for 4.3.10 yet");
-				RefuseJoin("Android players cannot join PC matches yet.");
+				// Creating or joining a match needs a web-service round trip (session, profile); do it
+				// off the network thread and answer the join when done.
+				var requested = room;
+				System.Threading.Tasks.Task.Run(() => JoinMatch(requested));
 				return;
 			}
 
@@ -86,6 +96,146 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				ReturnCode = 1,
 				DebugMessage = message,
 			}, new SendParameters());
+		}
+
+		// ------------------------------------------------------------------ matches
+
+		private LegacyMatchBridge match;
+
+		/// <summary>
+		/// Create (room number 0, from the create-game screen) or join a PC room, and put a server-side
+		/// stand-in for this player in it. The stand-in uses the player's own web-service session, so the
+		/// room loads their real profile and loadout and records their stats like a PC player's.
+		/// </summary>
+		private void JoinMatch(LegacyRoomMetaData requested) {
+			try {
+				LeaveMatch();
+
+				var token = LegacyMatchBridge.FetchSessionToken(Cmid);
+				if (string.IsNullOrEmpty(token)) {
+					RefuseJoin("Your session has expired. Please log in again.");
+					return;
+				}
+				var member = UserWebServiceClient.Instance.GetMember(token);
+				if (member?.CmuneMemberView?.PublicProfile == null || member.CmuneMemberView.PublicProfile.Cmid != Cmid) {
+					RefuseJoin("Could not load your profile. Please log in again.");
+					return;
+				}
+
+				var manager = GameServerApplication.Instance.RoomManager;
+				BaseGameRoom pcRoom;
+				if (requested.RoomId.Number == 0) {
+					if (!(requested is LegacyGameMetaData meta)) {
+						RefuseJoin("Invalid game settings.");
+						return;
+					}
+					var mode = ToPcGameMode(meta.GameMode);
+					if (mode == GameModeType.None) {
+						RefuseJoin("This game mode is not available on this server.");
+						return;
+					}
+					var address = requested.RoomId.Address ?? new byte[6];
+					var data = new GameRoomData {
+						Name = string.IsNullOrWhiteSpace(meta.Name) ? member.CmuneMemberView.PublicProfile.Name + " game" : meta.Name,
+						Server = new ConnectionAddress($"{address[0]}.{address[1]}.{address[2]}.{address[3]}", (ushort)(address[4] | (address[5] << 8))),
+						MapID = meta.MapId,
+						GameMode = mode,
+						PlayerLimit = Math.Max(2, (int)meta.MaxPlayers),
+						TimeLimit = Math.Max(60, meta.TimeLimitSeconds),
+						KillLimit = Math.Max(1, meta.SplatLimit),
+						GameFlags = meta.GameFlags & 0x1F,
+						LevelMin = meta.LevelMin,
+						LevelMax = meta.LevelMax,
+					};
+					pcRoom = manager.CreateRoom(data, meta.Password);
+					Log.Info($"[{Name}] cmid {Cmid}: created {pcRoom}({pcRoom.RoomId}) map {data.MapID} mode {mode}");
+				} else if (!manager.TryGetRoom(requested.RoomId.Number, out pcRoom)) {
+					RefuseJoin("The game doesn't exist anymore.");
+					return;
+				}
+
+				if (pcRoom.MetaData.ConnectedPlayers >= pcRoom.MetaData.PlayerLimit) {
+					RefuseJoin("The game is full.");
+					return;
+				}
+
+				var proxy = LegacyMatchProxy.Create(token, member);
+				var roomId = new LegacyRoomId { Number = pcRoom.RoomId, Address = requested.RoomId.Address ?? new byte[6] };
+				var bridge = new LegacyMatchBridge(this, proxy, pcRoom, roomId);
+				pcRoom.Join(proxy);
+				proxy.Actor.ActorInfo.Channel = ChannelType.Android;
+				lock (stateLock) match = bridge;
+
+				var response = new OperationResponse(LegacyOperationCode.PhotonGameJoin) { ReturnCode = 0 };
+				response.Parameters[LegacyParameterKey.ActorNr] = bridge.MyActorId;
+				response.Parameters[LegacyParameterKey.GameId] = roomId.ToBytes();
+				response.Parameters[LegacyParameterKey.InitRoom] = false;
+				response.Parameters[LegacyParameterKey.ServerTicks] = (long)BaseGameRoom.GetWireTimestamp();
+				SendOperationResponse(response, new SendParameters());
+				Log.Info($"[{Name}] cmid {Cmid}: joined {pcRoom}({pcRoom.RoomId}) as actor {bridge.MyActorId}");
+			} catch (Exception ex) {
+				Log.Error($"[{Name}] cmid {Cmid}: joining a match failed", ex);
+				RefuseJoin("Could not join the game.");
+			}
+		}
+
+		private void LeaveMatch() {
+			LegacyMatchBridge current;
+			lock (stateLock) { current = match; match = null; }
+			current?.Leave();
+		}
+
+		/// <summary>Game-mode RPCs from the phone (MessageToServer / All / Others / Player).</summary>
+		private void RouteGameModeCall(OperationRequest request) {
+			LegacyMatchBridge current;
+			lock (stateLock) current = match;
+			if (current == null) return;
+			if (!request.Parameters.TryGetValue(LegacyParameterKey.InstanceId, out var idObj) || !(idObj is short networkId)) return;
+			if (!request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var mObj) || !(mObj is byte methodId)) return;
+			if (networkId != current.ModeNetworkId) return;
+
+			object[] args;
+			try {
+				request.Parameters.TryGetValue(LegacyParameterKey.Bytes, out var raw);
+				args = LegacySerialization.ToObjects(raw as byte[]);
+			} catch (LegacyProtocolException ex) {
+				Log.Debug($"[{Name}] cmid {Cmid}: unreadable game-mode call {methodId}: {ex.Message}");
+				return;
+			}
+
+			switch (request.OperationCode) {
+				case LegacyOperationCode.MessageToServer:
+					current.OnServerCall(methodId, args);
+					break;
+				case LegacyOperationCode.MessageToPlayer:
+					if (request.Parameters.TryGetValue(LegacyParameterKey.ActorId, out var target) && target is int targetActor) {
+						current.OnPlayerCall(targetActor, methodId, args);
+					}
+					break;
+				default:
+					current.OnBroadcastCall(methodId, args);
+					break;
+			}
+		}
+
+		protected override void OnNetworkClassRegistered(short networkId) {
+			if (networkId != LegacyGameMetaData.ModeTeamDeathMatch && networkId != LegacyGameMetaData.ModeDeathMatch
+				&& networkId != LegacyGameMetaData.ModeTeamElimination) return;
+			LegacyMatchBridge current;
+			lock (stateLock) current = match;
+			current?.OnModeRegistered(networkId);
+		}
+
+		/// <summary>Call a method of the phone's game-mode class.</summary>
+		internal void SendGameModeCall(short networkId, byte methodId, object[] args) => SendNetworkCall(networkId, methodId, args);
+
+		private static GameModeType ToPcGameMode(short legacyMode) {
+			switch (legacyMode) {
+				case LegacyGameMetaData.ModeDeathMatch: return GameModeType.DeathMatch;
+				case LegacyGameMetaData.ModeTeamDeathMatch: return GameModeType.TeamDeathMatch;
+				case LegacyGameMetaData.ModeTeamElimination: return GameModeType.EliminationMode;
+				default: return GameModeType.None;
+			}
 		}
 
 		// ------------------------------------------------------------------ room list
@@ -191,6 +341,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 
 		protected override void OnDisconnect(DisconnectReason reasonCode, string reasonDetail) {
 			StopRoomList();
+			LeaveMatch();
 			base.OnDisconnect(reasonCode, reasonDetail);
 		}
 	}

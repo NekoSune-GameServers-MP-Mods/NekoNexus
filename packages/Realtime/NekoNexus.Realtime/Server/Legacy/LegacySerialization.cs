@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace NekoNexus.Realtime.Server.Legacy {
@@ -44,6 +45,17 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			public const byte ListRoomData = 0x6F;
 			/// <summary>Named PerformanceData in CmuneDataType; carries ServerLoadData.</summary>
 			public const byte ServerLoadData = 0x2F;
+			public const byte Color = 0x20;
+			public const byte ListVector3 = 0x23;
+			// UberStrikeByteConverter game types (decimal 101-109).
+			public const byte CharacterInfo = 101;
+			public const byte ShortVector3 = 102;
+			public const byte ArmorInfo = 104;
+			public const byte WeaponInfo = 105;
+			public const byte StatsCollection = 106;
+			public const byte DamageEvent = 107;
+			public const byte StatsInfo = 108;
+			public const byte EndOfMatchData = 109;
 		}
 
 		// ---- encode ----------------------------------------------------------------
@@ -93,12 +105,22 @@ namespace NekoNexus.Realtime.Server.Legacy {
 					WriteBigEndian(bytes, BitConverter.GetBytes((short)ints.Count));
 					foreach (var item in ints) WriteInt(bytes, item);
 					break;
+				case ILegacyTyped typed: typed.WriteTyped(bytes); break;
+				case List<LegacyVector3> vectors:
+					// Array_Vector3 (0x23): [byte count][vector3 ...]
+					bytes.Add(Type.ListVector3);
+					bytes.Add((byte)Math.Min(254, vectors.Count));
+					foreach (var item in vectors.Take(254)) item.WriteRaw(bytes);
+					break;
 				default:
 					throw new LegacyProtocolException($"cannot serialize {value?.GetType().Name ?? "null"} for a 4.3.10 client");
 			}
 		}
 
 		public static void WriteInt(List<byte> bytes, int value) => WriteBigEndian(bytes, BitConverter.GetBytes(value));
+		public static void WriteShort(List<byte> bytes, short value) => WriteBigEndian(bytes, BitConverter.GetBytes(value));
+		public static void WriteUShort(List<byte> bytes, ushort value) => WriteBigEndian(bytes, BitConverter.GetBytes(value));
+		public static short ReadShort(byte[] bytes, ref int i) => BitConverter.ToInt16(ReadBigEndian(bytes, ref i, 2), 0);
 		public static void WriteFloat(List<byte> bytes, float value) => WriteBigEndian(bytes, BitConverter.GetBytes(value));
 
 		public static void WriteString(List<byte> bytes, string value) {
@@ -175,7 +197,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 					for (var k = 0; k < n; k++) list.Add(ReadString(bytes, ref i));
 					return list;
 				}
-				case Type.Vector3: return new[] { ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i) };
+				case Type.Vector3: return LegacyVector3.ReadRaw(bytes, ref i);
 				case Type.Quaternion: return new[] { ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i) };
 				case Type.RoomMetaData: return LegacyRoomMetaData.Read(bytes, ref i);
 				case Type.GameMetaData: return LegacyGameMetaData.Read(bytes, ref i);
@@ -204,6 +226,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 					return list;
 				}
 				default:
+					if (LegacyGameTypes.TryRead(type, bytes, ref i, out var gameValue)) return gameValue;
 					throw new LegacyProtocolException($"unsupported 4.3.10 data type 0x{type:X2} at offset {i - 1}");
 			}
 		}

@@ -153,7 +153,7 @@ SniperArena, CannonArena) are the same bits in both versions.
 
 Rooms come from the same `GameRoomManager` PC players use; password rooms are left out (the 4.3.10
 client checks passwords itself). The CmuneRoomID address is the one the client joined the lobby
-with. Joining a match (`PhotonGameJoin` with a GameMetaData) is refused with
+with. Joining a match (`PhotonGameJoin` with a GameMetaData) was refused with
 `Android players cannot join PC matches yet.` until phase 3/4 exist.
 
 **Needs the new APK:** the Hashtable has to cross the NekoNexus wire, which only the updated
@@ -168,8 +168,8 @@ room list logs an unknown wire tag and shows no games.
 | 1 | Accept 4.3.10 peers, handshake, server load (servers appear with live PC counts) | **Done** |
 | 2a | Comm: join, roster both ways, lobby chat both ways | **Done** (`LegacyCommPeer`, unit-tested) |
 | 2b | Game list: PC rooms shown on Android (event 3, Hashtable over the wire, GameMetaData) | **Done** (needs the rebuilt APK shim) |
-| 3 | Join/leave (`0x58`/`0x59`) on the game server into the shared `GameRoomManager` rooms; dynamic network-id registration (RMI network class 1, methods 2/3 -> `RecieveRegistrationConfirmation(instanceId, networkId)`) for the game-mode classes (`FpsGameMode`, `TeamDeathMatchGameMode` 100, `DeathMatchGameMode` 101, `TeamEliminationGameMode` 106) | To do |
-| 4 | In-match: about 40 game RPCs (`FpsGameMode` 20, `ClientGameMode` 7, mode classes 11) and the game types (`65`-`6F`: ActorInfo, GameData, Transform, DamageEvent, EndOfMatch ...) translated to and from the 4.7.1 room protocol, plus item-id / map / mode mapping between 4.3.10 and 4.7.1 | To do |
+| 3 | Join/create (`0x58`, room 0 = create) into the shared `GameRoomManager` rooms through a server-side stand-in (`LegacyMatchProxy`, a real `GamePeer` like the AI bots); game-mode class registration (100/101/106); session lookup over the master socket (`LegacySession`) so the stand-in loads the real profile and loadout | **Implemented, untested on device** (`Legacy/LegacyMatch.cs`) |
+| 4 | In-match translation both ways: phone -> room (join 1, position 83, look/weapon 3, hits 68, respawn 72, pickups 61/98, doors 84, shots/projectiles/quick items 86/87/89/99/100) and room -> phone (players 1/2/4, positions 83, deltas 5, spawn 71/85, match start/end 76/77, kills 80, damage 78, score 79); game types 101-109 in `LegacyGameTypes.cs` | **Implemented, untested on device** |
 
 Unimplemented legacy opcodes and methods are logged once per connection at warning level by
 `LegacyPeer` (`legacy opcode 0x.. not supported yet`, `application method N not supported yet`),

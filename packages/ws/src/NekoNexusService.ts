@@ -263,6 +263,27 @@ export default class NekoNexusService {
               }
             }
             break;
+          case WebSocketPacketType.LegacySession: {
+            // A game server asks for the live session of an Android (4.3.10) player, so the player's
+            // server-side stand-in in a PC room can load their profile and loadout like a PC player.
+            // Only authenticated game-server sockets reach this handler.
+            if (e.ServerType !== ServerType.Game) break;
+            const cmid = Number((e.Data as any)?.Cmid) || 0;
+            const session =
+              cmid > 0
+                ? await models.GameSession.findOne({
+                    where: { Cmid: cmid, ExpireTime: { [Op.gt]: new Date() } },
+                    order: [['ExpireTime', 'DESC']],
+                  })
+                : null;
+            await e.Socket.Send(
+              WebSocketPacketType.LegacySession,
+              { SessionId: session?.SessionId ?? '' },
+              true,
+              e.Payload.ConversationId,
+            );
+            break;
+          }
           case WebSocketPacketType.MatchResult: {
             // A game server reported one player's finished-match result -> save it to match history.
             const d = e.Data as any;

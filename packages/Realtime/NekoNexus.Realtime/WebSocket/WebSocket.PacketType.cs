@@ -68,7 +68,11 @@
 			// off by default). { Enabled, FillTarget, MaxBots } -> stored in GameServerApplication.
 			// BotsConfig and read by BaseGameRoom.Bots.cs instead of a YAML setting, so admin can
 			// flip it live with no realtime restart.
-			SetBotsConfig
+			SetBotsConfig,
+
+			// Game server -> web service (request/reply): the live web-service session of an Android
+			// (4.3.10) player, who connects to realtime with only a CMID. { Cmid } -> { SessionId }.
+			LegacySession
 		}
 	}
 }

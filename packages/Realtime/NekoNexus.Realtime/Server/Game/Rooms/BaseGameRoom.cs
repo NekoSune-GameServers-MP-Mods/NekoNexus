@@ -3,6 +3,7 @@ using log4net;
 using NekoNexus.Realtime.Core;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using UberStrike.Core.Models;
 using UberStrike.Core.Models.Views;
@@ -192,6 +193,29 @@ namespace NekoNexus.Realtime.Server.Game {
 
 			State.ResetState();
 			State.SetState(GameStateId.WaitingForPlayers);
+		}
+
+		/// <summary>
+		/// Run a room operation on behalf of a server-side stand-in peer (an Android 4.3.10 player).
+		/// Goes through the same handler, validation and rate limits as a PC client's request.
+		/// </summary>
+		internal void RunProxyOperation(GamePeer peer, byte opCode, byte[] bytes) {
+			using (var stream = new MemoryStream(bytes ?? new byte[0])) {
+				OpHandler.OnOperationRequest(peer, opCode, stream);
+			}
+		}
+
+		/// <summary>
+		/// PC clients upload the map's spawn points when they join; 4.3.10 clients only report how many
+		/// there are and spawn themselves at their own local spawn point. Without any server-side spawn
+		/// point SpawnPlayer silently does nothing, so an Android-only room gets one placeholder (the
+		/// Android player's real position replaces it with its first position update). A PC client's
+		/// upload later replaces the placeholder.
+		/// </summary>
+		internal void EnsureSpawnPoints(TeamID team) {
+			if (!SpawnPointManager.IsLoaded(team)) {
+				SpawnPointManager.Load(team, new List<Vector3> { Vector3.zero }, new List<byte> { 0 });
+			}
 		}
 
 		public void Join(GamePeer peer) {

@@ -126,7 +126,8 @@ namespace Photon.SocketServer {
 		protected virtual void OnOperationRequest(OperationRequest operationRequest, SendParameters sendParameters) { }
 		protected virtual void OnDisconnect(DisconnectReason reasonCode, string reasonDetail) { }
 
-		public SendResult SendEvent(EventData eventData, SendParameters sendParameters) {
+		// Virtual so a server-side stand-in peer (Android players in PC rooms) can capture its events.
+		public virtual SendResult SendEvent(EventData eventData, SendParameters sendParameters) {
 			if (Transport == null || Host == null) return SendResult.Disconnected;
 			var wire = WireMessage.Event(eventData.Code, eventData.Parameters);
 			return Host.Send(this, WireCodec.Encode(wire), sendParameters.Unreliable, sendParameters.ChannelId);

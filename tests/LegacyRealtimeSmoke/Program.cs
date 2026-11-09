@@ -76,6 +76,44 @@ internal static class Program {
         var gameBack = (LegacyGameMetaData)((System.Collections.Generic.List<LegacyRoomMetaData>)LegacySerialization.ToObjects(gameBytes)[0])[0];
         Assert(gameBack.MapId == 13 && gameBack.GameMode == 100 && gameBack.RoomId.Server == "75.119.148.51:5155" && gameBack.SplatLimit == 50, "game metadata round trip");
 
+        // In-match types (UberStrikeByteConverter): CharacterInfo as a SyncObject with typed fields.
+        var character = new LegacySyncObject { Id = 3 };
+        character[LegacyCharField.Cmid] = 42;
+        character[LegacyCharField.Ping] = (ushort)30;
+        character[LegacyCharField.Health] = (short)100;
+        character[LegacyCharField.TeamID] = (byte)1;
+        character[LegacyCharField.SkinColor] = new LegacyColor(1, 0.5f, 0.25f);
+        character[LegacyCharField.Stats] = new LegacyStatsInfo { Kills = 5, Deaths = 2 };
+        character[LegacyCharField.Armor] = new LegacyArmorInfo { ArmorPoints = 50, ArmorPointCapacity = 100 };
+        character[LegacyCharField.Weapons] = new LegacyWeaponInfo();
+        character[LegacyCharField.Gear] = new System.Collections.Generic.List<int> { 1, 2, 3, 4, 5, 6, 7 };
+        var charBytes = LegacySerialization.ToBytes(new LegacyCharacterInfo(character));
+        Assert(charBytes[0] == 101, "character info type");
+        var charBack = (LegacyCharacterInfo)LegacySerialization.ToObjects(charBytes)[0];
+        Assert(charBack.Sync.Id == 3 && (int)charBack.Sync[LegacyCharField.Cmid] == 42
+            && (ushort)charBack.Sync[LegacyCharField.Ping] == 30 && (short)charBack.Sync[LegacyCharField.Health] == 100
+            && ((LegacyStatsInfo)charBack.Sync[LegacyCharField.Stats]).Kills == 5
+            && ((LegacyArmorInfo)charBack.Sync[LegacyCharField.Armor]).ArmorPointCapacity == 100
+            && ((LegacyWeaponInfo)charBack.Sync[LegacyCharField.Weapons]).ItemIds.Count == 5
+            && ((System.Collections.Generic.List<int>)charBack.Sync[LegacyCharField.Gear]).Count == 7, "character info round trip");
+
+        // ShortVector3: shorts of x*10, y*100, z*10 (12.3, 4.56, -7.8 -> 123, 456, -78).
+        var sv = new System.Collections.Generic.List<byte>();
+        new LegacyShortVector3(new LegacyVector3(12.3f, 4.56f, -7.8f)).WriteRaw(sv);
+        Assert(sv[0] == 123 && sv[1] == 0 && sv[2] == 0xC8 && sv[3] == 0x01 && sv[4] == 0xB2 && sv[5] == 0xFF, "short vector layout");
+
+        // A 4.3.10 position update (83): [int actor][ShortVector3][int time] inside a List<byte> (0x0F).
+        var position = LegacySerialization.ToObjects(new byte[] { 0x0F, 14,0,0,0, 1,0,0,0, 123,0, 0xC8,0x01, 0xB2,0xFF, 9,0,0,0 });
+        Assert(position[0] is byte[] raw && raw.Length == 14, "position update payload");
+
+        // DamageEvent (107) and Vector3 lists (0x23) round trip.
+        var damage = new LegacyDamageEvent { BodyPartFlag = 2 };
+        damage.Damage[10] = 25;
+        var damageBack = (LegacyDamageEvent)LegacySerialization.ToObjects(LegacySerialization.ToBytes(damage))[0];
+        Assert(damageBack.BodyPartFlag == 2 && damageBack.Damage[10] == 25, "damage event round trip");
+        var vectors = LegacySerialization.ToObjects(LegacySerialization.ToBytes(new System.Collections.Generic.List<LegacyVector3> { new LegacyVector3(1, 2, 3) }));
+        Assert(((System.Collections.Generic.List<LegacyVector3>)vectors[0])[0].Y == 2, "vector3 list round trip");
+
         Console.WriteLine("Android 4.3.10 legacy codec smoke tests passed.");
         return 0;
     }
