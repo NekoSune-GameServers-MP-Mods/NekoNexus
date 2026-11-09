@@ -125,7 +125,13 @@ export default class ApplicationWebService extends BaseWebService {
         raw: true,
       });
 
-      ListProxy.Serialize(outputStream, servers, PhotonViewProxy.Serialize);
+      // The original Android client may use GetPhotonServers as well as
+      // AuthenticateApplication. Never send it 127.0.0.1/blank endpoints,
+      // which point back to the handset and produce empty-connection errors.
+      const visibleServers = applicationView?.Channel === ChannelType.Android
+        ? servers.filter(ApplicationWebService.isConnectableAndroidServer)
+        : servers;
+      ListProxy.Serialize(outputStream, visibleServers, PhotonViewProxy.Serialize);
       return isEncrypted
         ? this.CryptoPolicy.RijndaelEncrypt(outputStream, this.EncryptionPassPhrase, this.EncryptionInitVector)
         : outputStream;
