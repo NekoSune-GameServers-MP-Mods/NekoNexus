@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'packages/Realtime/**'
+      - 'tests/LegacyRealtimeSmoke/**'
       - 'shims/**'
       - 'packages/ws/**'
       - 'packages/nekonexus-models/**'
@@ -34,6 +35,9 @@ jobs:
       - name: Build realtime host and server
         shell: pwsh
         run: dotnet build packages/Realtime/NekoNexus.Realtime.Host/NekoNexus.Realtime.Host.csproj -c Release
+      - name: Run Android legacy protocol smoke tests
+        shell: pwsh
+        run: dotnet run --project tests/LegacyRealtimeSmoke/LegacyRealtimeSmoke.csproj -c Release
 
   legacy-webservices:
     runs-on: ubuntu-latest
