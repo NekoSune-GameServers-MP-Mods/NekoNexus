@@ -42,7 +42,25 @@ namespace NekoNexus.Realtime.Server.Game {
 			public byte KeyState { get; set; }
 			public bool JumpLaunchObserved { get; set; }
 			public bool WaterObserved { get; set; }
+			/// <summary>How many of <see cref="Observations"/> were in water (wading/swimming/diving).</summary>
+			public int WaterObservations { get; set; }
 		}
+
+		private const MoveStates WaterStates = MoveStates.Wading | MoveStates.Swimming | MoveStates.Diving;
+
+		/// <summary>
+		/// Movement flags a bot may replay. Crouching (Ducked), Landed and the synthetic Flying flag
+		/// are per-moment player choices, not properties of the place: replaying them made bots
+		/// render crouched or sunk into the floor. Water flags are only kept when <paramref name="inWater"/>.
+		/// </summary>
+		internal static byte SanitizeMovementState(byte state, bool inWater) {
+			var flags = (MoveStates)state & ~(MoveStates.Flying | MoveStates.Ducked | MoveStates.Landed);
+			if (!inWater) flags &= ~WaterStates;
+			if ((flags & (MoveStates.Grounded | MoveStates.Jumping | WaterStates)) == 0) flags |= MoveStates.Grounded;
+			return (byte)flags;
+		}
+
+		internal static byte SanitizeKeyState(byte keyState) => (byte)(keyState & ~(byte)KeyState.Crouch);
 
 		private sealed class KnowledgeEdge {
 			public int From { get; set; }
@@ -116,11 +134,13 @@ namespace NekoNexus.Realtime.Server.Game {
 				var node = FindOrAddNode(map, position);
 				if (node == null) return;
 				node.Observations++;
-				node.MovementState = (byte)(movementState & ~(byte)MoveStates.Flying);
-				node.KeyState = keyState;
 				var flags = (MoveStates)movementState;
+				var inWater = (flags & WaterStates) != 0;
+				node.MovementState = SanitizeMovementState(movementState, inWater);
+				node.KeyState = SanitizeKeyState(keyState);
 				node.JumpLaunchObserved |= (flags & MoveStates.Jumping) != 0 || velocity.y >= 10f;
-				node.WaterObserved |= (flags & (MoveStates.Wading | MoveStates.Swimming | MoveStates.Diving)) != 0;
+				node.WaterObserved |= inWater;
+				if (inWater) node.WaterObservations++;
 
 				if (previous.HasValue && Vector3.Distance(previous.Value, position) <= 18f) {
 					var from = FindOrAddNode(map, previous.Value);
@@ -194,8 +214,11 @@ namespace NekoNexus.Realtime.Server.Game {
 				var choice = candidates.OrderBy(c => c.Score - (target?.Actor != null && Vector3.Distance(new Vector3(c.Node.X, c.Node.Y, c.Node.Z), target.Actor.Movement.Position) < 12f ? 1.5f : 0))
 					.ThenBy(c => c.Node.Id).First();
 				next = new Vector3(choice.Node.X, choice.Node.Y, choice.Node.Z);
-				movementState = choice.Node.MovementState;
-				keyState = choice.Node.KeyState;
+				// The node keeps the LAST state seen there; only treat it as water if most visits
+				// were in water, so one player wading nearby doesn't make bots swim on dry floor.
+				var mostlyWater = choice.Node.WaterObservations * 2 > choice.Node.Observations;
+				movementState = SanitizeMovementState(choice.Node.MovementState, mostlyWater);
+				keyState = SanitizeKeyState(choice.Node.KeyState);
 				return true;
 			}
 		}

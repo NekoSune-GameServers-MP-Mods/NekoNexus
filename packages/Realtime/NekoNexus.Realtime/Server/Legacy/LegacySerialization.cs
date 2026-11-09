@@ -67,11 +67,15 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				case string str: bytes.Add(Type.String); WriteString(bytes, str); break;
 				case byte[] arr: bytes.Add(Type.ArrayByte); WriteInt(bytes, arr.Length); bytes.AddRange(arr); break;
 				case LegacyServerLoadData load:
+					// Unlike every other 4.3.10 type, the client reads ServerLoadData with
+					// BitConverter as-is, i.e. LITTLE-endian. Writing it big-endian showed
+					// "33554432 Players Online, 16777216 Games" (2 and 1 byte-swapped) and a
+					// capacity of 7.18E-41 (100f swapped), so every server looked full.
 					bytes.Add(Type.ServerLoadData);
-					WriteInt(bytes, load.PlayersConnected);
-					WriteInt(bytes, load.PeersConnected);
-					WriteInt(bytes, load.RoomsCreated);
-					WriteFloat(bytes, load.MaxPlayerCount);
+					WriteLittleEndian(bytes, BitConverter.GetBytes(load.PlayersConnected));
+					WriteLittleEndian(bytes, BitConverter.GetBytes(load.PeersConnected));
+					WriteLittleEndian(bytes, BitConverter.GetBytes(load.RoomsCreated));
+					WriteLittleEndian(bytes, BitConverter.GetBytes(load.MaxPlayerCount));
 					break;
 				case LegacyRoomId room: bytes.Add(Type.RoomId); room.Write(bytes); break;
 				case LegacyRoomMetaData meta: meta.WriteTyped(bytes); break;
@@ -115,6 +119,20 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			bytes.AddRange(value);
 		}
 
+		private static void WriteLittleEndian(List<byte> bytes, byte[] value) {
+			if (!BitConverter.IsLittleEndian) Array.Reverse(value);
+			bytes.AddRange(value);
+		}
+
+		private static byte[] ReadLittleEndian(byte[] bytes, ref int i, int count) {
+			Require(bytes, i, count);
+			var value = new byte[count];
+			Buffer.BlockCopy(bytes, i, value, 0, count);
+			i += count;
+			if (!BitConverter.IsLittleEndian) Array.Reverse(value);
+			return value;
+		}
+
 		// ---- decode ----------------------------------------------------------------
 
 		public static object[] ToObjects(byte[] bytes) {
@@ -148,10 +166,10 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				}
 				case Type.ServerLoadData:
 					return new LegacyServerLoadData {
-						PlayersConnected = ReadInt(bytes, ref i),
-						PeersConnected = ReadInt(bytes, ref i),
-						RoomsCreated = ReadInt(bytes, ref i),
-						MaxPlayerCount = BitConverter.ToSingle(ReadBigEndian(bytes, ref i, 4), 0),
+						PlayersConnected = BitConverter.ToInt32(ReadLittleEndian(bytes, ref i, 4), 0),
+						PeersConnected = BitConverter.ToInt32(ReadLittleEndian(bytes, ref i, 4), 0),
+						RoomsCreated = BitConverter.ToInt32(ReadLittleEndian(bytes, ref i, 4), 0),
+						MaxPlayerCount = BitConverter.ToSingle(ReadLittleEndian(bytes, ref i, 4), 0),
 					};
 				case Type.ListInt16: {
 					var n = ReadCount(bytes, ref i);

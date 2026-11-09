@@ -573,12 +573,14 @@ namespace NekoNexus.Realtime.Server.Game {
 					if (faceMovement)
 						FaceDirection(actor, direction);
 					actor.Movement.Velocity = (next - current) * BaseGameRoom.TICK_TRATE;
-					actor.Movement.KeyState = point.KeyState;
+					actor.Movement.KeyState = BotMapTraining.SanitizeKeyState(point.KeyState);
 				}
 
-				// Never copy the synthetic Flying flag. Jump/swim/wade states are copied from
-				// real movement samples, and the jump event drives the normal client animation.
-				var safeState = (byte)(point.MovementState & ~(byte)MoveStates.Flying);
+				// Never copy Flying, Ducked or Landed (see SanitizeMovementState). Jump/swim/wade
+				// states are copied from real movement samples; the jump event drives the animation.
+				var pointFlags = (MoveStates)point.MovementState;
+				var safeState = BotMapTraining.SanitizeMovementState(point.MovementState,
+					(pointFlags & (MoveStates.Wading | MoveStates.Swimming | MoveStates.Diving)) != 0);
 				if ((((MoveStates)safeState & MoveStates.Jumping) != 0) && (((MoveStates)previousMovementState & MoveStates.Jumping) == 0))
 					Room.Jump(Bot, next);
 				previousMovementState = safeState;
