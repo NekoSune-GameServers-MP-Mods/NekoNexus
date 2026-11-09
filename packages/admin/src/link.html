@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Link accounts — NekoNexus</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: { colors: { brand: { 400: '#34d399', 500: '#10b981', 600: '#059669', 700: '#047857' } } } } };
+  </script>
+  <style>
+    body { background: radial-gradient(1200px 600px at 50% -10%, rgba(16, 185, 129, .14), transparent 60%), #0a0a0a; }
+    .glass { background: rgba(23, 23, 23, .7); backdrop-filter: blur(8px); }
+  </style>
+</head>
+<body class="text-neutral-200 min-h-screen">
+  <header class="border-b border-neutral-800">
+    <div class="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between">
+      <a href="/" class="text-xl font-bold text-brand-400">NekoNexus</a>
+      <nav class="flex gap-5 text-sm text-neutral-400 items-center">
+        <a href="/" class="hover:text-brand-400">Home</a>
+        <a href="/social" class="hover:text-brand-400">Friends &amp; Mail</a>
+        <a href="/link" class="text-brand-400">Link accounts</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-4 py-8 space-y-6">
+    <div id="needLogin" class="hidden glass rounded-xl p-8 text-center">
+      <p class="mb-4">Sign in with Steam to link your accounts.</p>
+      <a href="/login" class="px-4 py-2 rounded bg-brand-600 hover:bg-brand-500 text-white text-sm">Sign in with Steam</a>
+    </div>
+
+    <section id="step1" class="hidden glass rounded-xl p-6">
+      <h1 class="text-xl font-semibold mb-2">Link your Steam and email accounts</h1>
+      <p class="text-sm text-neutral-400 mb-4">
+        Play with the same profile on PC (Steam), Android and UberStrike Standalone. Enter the email and password
+        of the game account you use on Android / Standalone. Nothing changes until you confirm on the next step.
+      </p>
+      <div class="space-y-3 max-w-sm">
+        <input id="email" type="email" autocomplete="username" placeholder="Email"
+          class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm" />
+        <input id="password" type="password" autocomplete="current-password" placeholder="Password"
+          class="w-full bg-neutral-900 border border-neutral-700 rounded px-3 py-2 text-sm" />
+        <button id="checkBtn" class="px-4 py-2 rounded bg-brand-600 hover:bg-brand-500 text-white text-sm">Continue</button>
+        <p id="checkMsg" class="text-sm text-red-400"></p>
+      </div>
+    </section>
+
+    <section id="step2" class="hidden glass rounded-xl p-6">
+      <h2 class="text-lg font-semibold mb-2">Choose the profile to keep</h2>
+      <p class="text-sm text-neutral-400 mb-4">
+        The profile you keep is used for both logins from now on. The other profile is
+        <span class="text-red-400 font-semibold">permanently deleted</span>: its level, stats, credits, points, items,
+        friends, clan membership and mail are lost.
+      </p>
+      <div id="choices" class="grid sm:grid-cols-2 gap-4"></div>
+      <div class="mt-5 p-4 rounded border border-red-900 bg-red-950/40 text-sm">
+        <label class="flex gap-2 items-start">
+          <input id="ack" type="checkbox" class="mt-1" />
+          <span>I understand that the profile I did not choose, and all of its data, will be deleted and cannot be restored.
+            Log out of the game on every device before linking.</span>
+        </label>
+      </div>
+      <div class="mt-4 flex items-center gap-3">
+        <button id="linkBtn" disabled class="px-4 py-2 rounded bg-red-700 hover:bg-red-600 disabled:opacity-40 text-white text-sm">Link accounts</button>
+        <button id="backBtn" class="px-4 py-2 rounded bg-neutral-800 hover:bg-neutral-700 text-sm">Back</button>
+        <span id="linkMsg" class="text-sm text-red-400"></span>
+      </div>
+    </section>
+
+    <section id="done" class="hidden glass rounded-xl p-6">
+      <h2 class="text-lg font-semibold text-brand-400 mb-2">Accounts linked</h2>
+      <p class="text-sm text-neutral-300">Sign in again in the game on every device. Steam and your email login now open the same profile.</p>
+    </section>
+  </main>
+
+  <script>
+    const token = localStorage.getItem('nekonexus_user_token');
+    const $ = (id) => document.getElementById(id);
+    const show = (id, on) => $(id).classList.toggle('hidden', !on);
+    let primary = null;
+
+    if (!token) show('needLogin', true); else show('step1', true);
+
+    async function post(path, body) {
+      const r = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Something went wrong.');
+      return data;
+    }
+
+    function card(kind, p) {
+      const label = kind === 'steam' ? 'Steam profile (PC)' : 'Email profile (Android / Standalone)';
+      const el = document.createElement('button');
+      el.className = 'text-left p-4 rounded-lg border border-neutral-700 hover:border-brand-500';
+      el.innerHTML = `<div class="text-xs text-neutral-400 mb-1">${label}</div>
+        <div class="font-semibold"></div>
+        <div class="text-sm text-neutral-400 mt-1">Level ${p.level} &middot; ${p.xp.toLocaleString()} XP</div>
+        <div class="text-sm text-neutral-400">${p.credits.toLocaleString()} credits &middot; ${p.points.toLocaleString()} points &middot; ${p.items} items</div>`;
+      el.querySelector('.font-semibold').textContent = p.name; // player-chosen text: never as HTML
+      el.onclick = () => {
+        primary = kind;
+        for (const c of $('choices').children) c.classList.remove('border-brand-500', 'ring-2', 'ring-brand-500');
+        el.classList.add('border-brand-500', 'ring-2', 'ring-brand-500');
+        update();
+      };
+      return el;
+    }
+
+    function update() { $('linkBtn').disabled = !(primary && $('ack').checked); }
+    $('ack').onchange = update;
+
+    $('checkBtn').onclick = async () => {
+      $('checkMsg').textContent = '';
+      try {
+        const data = await post('/api/me/link/check', { email: $('email').value, password: $('password').value });
+        $('choices').replaceChildren(card('steam', data.steam), card('email', data.email));
+        primary = null; $('ack').checked = false; update();
+        show('step1', false); show('step2', true);
+      } catch (e) { $('checkMsg').textContent = e.message; }
+    };
+
+    $('backBtn').onclick = () => { show('step2', false); show('step1', true); };
+
+    $('linkBtn').onclick = async () => {
+      $('linkMsg').textContent = '';
+      if (!confirm('Last check: the other profile will be deleted permanently. Link the accounts now?')) return;
+      try {
+        await post('/api/me/link', { email: $('email').value, password: $('password').value, primary, confirm: 'DELETE' });
+        $('password').value = '';
+        show('step2', false); show('done', true);
+      } catch (e) { $('linkMsg').textContent = e.message; }
+    };
+  </script>
+</body>
+</html>

@@ -99,25 +99,42 @@ export default class GameSessionManager {
     return session;
   }
 
+  /** The live session of a player (no new session is created). */
   async findSessionByPlayerId(id: number): Promise<any> {
-    const [session, isCreated] = await GameSession.findOrCreate({
+    const session = await GameSession.findOne({
       where: {
         Cmid: id,
         ExpireTime: {
           [Op.gt]: new Date(),
         },
       },
+      order: [['ExpireTime', 'DESC']],
     });
 
-    if (!isCreated) {
-      session.extendExpireTime();
-    }
-
+    session?.extendExpireTime();
     return session;
   }
 
+  /**
+   * Resolve an auth token to its live session. The token must match a stored, unexpired session
+   * exactly. (This used to read the CMID from the token's first 4 bytes and return - or create -
+   * that player's session without checking the rest, so a forged token for any CMID was accepted
+   * by every 2.0 endpoint that authenticates with it.)
+   */
   async findSessionForSteamUser(sessionId: string): Promise<any> {
-    return this.findSessionByPlayerId(GameSession.getCmidFromSessionId(sessionId));
+    if (!sessionId || !sessionId.trim().length) return null;
+
+    const session = await GameSession.findOne({
+      where: {
+        SessionId: sessionId,
+        ExpireTime: {
+          [Op.gt]: new Date(),
+        },
+      },
+    });
+
+    session?.extendExpireTime();
+    return session;
   }
 
   private createSessionId(cmid: number): string {

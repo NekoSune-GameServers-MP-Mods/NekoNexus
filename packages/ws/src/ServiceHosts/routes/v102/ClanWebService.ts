@@ -19,6 +19,7 @@ import { ApiVersion } from '@/utils/enums';
 import { Clan, ClanMember, GameSession, GroupInvitation, UserAccount } from '@festivaldev/nekonexus-models';
 import { Op } from 'sequelize';
 import V2ClanWebService from '../v2/ClanWebService';
+import { sessionTokenFor as sharedSessionTokenFor } from './LegacyBridge';
 import { ClanView, GroupInvitationView } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
 import {
   BooleanProxy,
@@ -58,11 +59,7 @@ export default class ClanWebService extends BaseWebService {
   // Look up the session the 1.0.2 login created and run the 2.0 logic with it, so both client
   // versions share one implementation (and the same realtime notifications).
   private static async sessionTokenFor(cmid: number): Promise<string> {
-    const session = await GameSession.findOne({
-      where: { Cmid: cmid, ExpireTime: { [Op.gt]: new Date() } },
-      order: [['ExpireTime', 'DESC']],
-    });
-    return session?.SessionId ?? '';
+    return sharedSessionTokenFor(cmid);
   }
 
   /** Run a 2.0 ClanWebService handler with plain (unencrypted) input; returns its plain output. */

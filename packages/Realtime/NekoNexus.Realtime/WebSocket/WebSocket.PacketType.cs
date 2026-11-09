@@ -72,7 +72,15 @@
 
 			// Game server -> web service (request/reply): the live web-service session of an Android
 			// (4.3.10) player, who connects to realtime with only a CMID. { Cmid } -> { SessionId }.
-			LegacySession
+			LegacySession,
+
+			// Comm server -> web service -> Game servers: in-match chat typed by an Android (4.3.10) player,
+			// who sends it to the comm server. { Cmid, Message, Context }.
+			LegacyRoomChat,
+
+			// Game server -> web service -> Comm server: in-match chat for an Android player's phone.
+			// { TargetCmid, Cmid, ActorId, Name, Message, AccessLevel, Context }.
+			LegacyChatDeliver
 		}
 	}
 }

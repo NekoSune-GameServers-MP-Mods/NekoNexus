@@ -16,6 +16,8 @@ export async function sessionTokenFor(cmid: number): Promise<string> {
     where: { Cmid: cmid, ExpireTime: { [Op.gt]: new Date() } },
     order: [['ExpireTime', 'DESC']],
   });
+  // Using the session keeps it alive (sliding 12h expiry), like an authenticated 2.0 call.
+  session?.extendExpireTime();
   return session?.SessionId ?? '';
 }
 

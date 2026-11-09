@@ -1,4 +1,4 @@
-using Cmune.DataCenter.Common.Entities;
+﻿using Cmune.DataCenter.Common.Entities;
 using log4net;
 using NekoNexus.Realtime.Server.Game;
 using Photon.SocketServer;
@@ -74,6 +74,9 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			public const byte EmitProjectile = 86, RemoveProjectile = 87, SingleBulletFire = 89;
 			public const byte SetPowerupState = 97, IncreaseHealthAndArmor = 98, QuickItemEvent = 99, EmitQuickItem = 100;
 			public const byte KickFromGame = 101, SetShotCounts = 102;
+			// TeamEliminationGameMode (106)
+			public const byte PlayerSpectator = 51, TeamEliminationRoundEnd = 58, GraceTimeCountDown = 90;
+			public const byte UpdateRoundStats = 91, SyncRoundTime = 92, SetWaitingForPlayers = 93;
 		}
 
 		private readonly LegacyGamePeer owner;
@@ -101,12 +104,26 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		private ushort legacyMoveState = (ushort)LegacyPlayerStates.Grounded;
 		private bool gameBegun;
 
+		// Bridges on this game server by Android CMID, for chat relayed from the comm server.
+		private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, LegacyMatchBridge> ByCmid =
+			new System.Collections.Concurrent.ConcurrentDictionary<int, LegacyMatchBridge>();
+
 		public LegacyMatchBridge(LegacyGamePeer owner, LegacyMatchProxy proxy, BaseGameRoom room, LegacyRoomId roomId) {
 			this.owner = owner;
 			this.proxy = proxy;
 			this.room = room;
 			this.roomId = roomId;
 			proxy.Bridge = this;
+			ByCmid[owner.Cmid] = this;
+		}
+
+		/// <summary>In-match chat from an Android player (relayed from the comm server): post it in their room.</summary>
+		public static void RouteChat(int cmid, string message, byte context) {
+			if (string.IsNullOrEmpty(message) || !ByCmid.TryGetValue(cmid, out var bridge)) return;
+			bridge.Op(IGameRoomOperationsType.ChatMessage, s => {
+				StringProxy.Serialize(s, message);
+				ByteProxy.Serialize(s, context);
+			});
 		}
 
 		private byte MyPlayerId => proxy.Actor?.ActorInfo?.PlayerId ?? 0;
@@ -177,7 +194,12 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				case Rpc.DoorOpen:
 					if (args.Length >= 1) Op(IGameRoomOperationsType.OpenDoor, s => Int32Proxy.Serialize(s, Convert.ToInt32(args[0])));
 					break;
-				case Rpc.SetPowerUpCount: // pickup respawn durations; PC clients send these with positions
+				case Rpc.SetPowerUpCount:
+					// (int actorId, List<byte> respawn seconds per pickup) - no positions in 4.3.10.
+					if (args.Length >= 2 && args[1] is byte[] durations) {
+						room.LoadPowerUpsWithoutPositions(durations.Select(d => (ushort)d).ToList());
+					}
+					break;
 				case Rpc.SetShotCounts:   // anti-cheat shot counters
 					break;
 				default:
@@ -324,6 +346,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		}
 
 		public void Leave() {
+			if (ByCmid.TryGetValue(owner.Cmid, out var current) && current == this) ByCmid.TryRemove(owner.Cmid, out _);
 			try {
 				if (proxy.Room != null) proxy.Room.Leave(proxy);
 			} catch (Exception ex) {
@@ -346,10 +369,13 @@ namespace NekoNexus.Realtime.Server.Legacy {
 
 		// ============================================================== room -> phone
 
+		private bool IsElimination => ModeNetworkId == LegacyGameMetaData.ModeTeamElimination;
+
 		public void OnRoomEvent(byte code, byte[] payload) {
 			if (code < 12) return; // GamePeer events (room entered, game lists ...) are not for 4.3.10
 			try {
 				using (var s = new MemoryStream(payload)) {
+					if (IsElimination && TryTranslateElimination((IGameRoomEventsType)code, s)) return;
 					switch ((IGameRoomEventsType)code) {
 						case IGameRoomEventsType.AllPlayers: {
 							var infos = ListProxy<GameActorInfo>.Deserialize(s, GameActorInfoProxy.Deserialize);
@@ -514,6 +540,21 @@ namespace NekoNexus.Realtime.Server.Legacy {
 							if (TryGetPlayerId(cmid, out var pid)) Call(Rpc.TeamChange, ActorIdOf(pid), (byte)team);
 							break;
 						}
+						case IGameRoomEventsType.ChatMessage: {
+							// Room chat -> the phone's in-game chat, through the comm server it listens on.
+							var cmid = Int32Proxy.Deserialize(s);
+							var name = StringProxy.Deserialize(s);
+							var message = StringProxy.Deserialize(s);
+							var access = EnumProxy<MemberAccessLevel>.Deserialize(s);
+							var context = ByteProxy.Deserialize(s);
+							if (cmid == owner.Cmid) break; // the phone already shows its own line
+							var actorId = TryGetPlayerId(cmid, out var pid) ? ActorIdOf(pid) : 0;
+							GameServerApplication.Instance.SocketClient?.SendSync(PacketType.LegacyChatDeliver, new Dictionary<string, object> {
+								{ "TargetCmid", owner.Cmid }, { "Cmid", cmid }, { "ActorId", actorId }, { "Name", name },
+								{ "Message", message }, { "AccessLevel", (int)access }, { "Context", (int)context },
+							});
+							break;
+						}
 						case IGameRoomEventsType.KickPlayer:
 						case IGameRoomEventsType.JoinGameFailed:
 							Call(Rpc.KickFromGame, StringProxy.Deserialize(s));
@@ -524,6 +565,43 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				}
 			} catch (Exception ex) {
 				Log.Warn($"cmid {owner.Cmid}: could not translate room event {(IGameRoomEventsType)code}", ex);
+			}
+		}
+
+		/// <summary>
+		/// Team Elimination rounds: the 4.3.10 mode has its own round RPCs. Returns true when the event
+		/// was handled here (otherwise the generic translation runs).
+		/// </summary>
+		private bool TryTranslateElimination(IGameRoomEventsType type, MemoryStream s) {
+			switch (type) {
+				case IGameRoomEventsType.TeamWins:
+					Call(Rpc.TeamEliminationRoundEnd, (int)EnumProxy<TeamID>.Deserialize(s));
+					return true;
+				case IGameRoomEventsType.UpdateRoundScore: {
+					var round = Int32Proxy.Deserialize(s);
+					int blue = Int16Proxy.Deserialize(s);
+					int red = Int16Proxy.Deserialize(s);
+					Call(Rpc.UpdateRoundStats, round, blue, red);
+					return true;
+				}
+				case IGameRoomEventsType.WaitingForPlayers:
+					Call(Rpc.SetWaitingForPlayers);
+					return true;
+				case IGameRoomEventsType.MatchStartCountdown:
+					Call(Rpc.GraceTimeCountDown, room.RoundNumber, (int)ByteProxy.Deserialize(s));
+					return true;
+				case IGameRoomEventsType.MatchStart: {
+					var round = Int32Proxy.Deserialize(s);
+					var endTime = Int32Proxy.Deserialize(s);
+					Call(Rpc.MatchStart, round, endTime);
+					Call(Rpc.SyncRoundTime, endTime);
+					return true;
+				}
+				case IGameRoomEventsType.JoinedAsSpectator:
+					Call(Rpc.PlayerSpectator, MyActorId);
+					return true;
+				default:
+					return false;
 			}
 		}
 

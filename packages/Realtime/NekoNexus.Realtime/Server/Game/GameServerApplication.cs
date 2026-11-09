@@ -140,6 +140,16 @@ namespace NekoNexus.Realtime.Server.Game {
 						} catch (Exception ex) { Log.Error("SetBoost failed", ex); }
 						break;
 					}
+					case PacketType.LegacyRoomChat: {
+						try {
+							var data = (Dictionary<string, object>)e.Data;
+							Legacy.LegacyMatchBridge.RouteChat(
+								Convert.ToInt32(data["Cmid"]),
+								Convert.ToString(data["Message"]),
+								Convert.ToByte(data["Context"]));
+						} catch (Exception ex) { Log.Error("LegacyRoomChat failed", ex); }
+						break;
+					}
 					case PacketType.SetBotsConfig: {
 						// Admin-controlled AI fill-bots toggle (BETA), broadcast to all Game servers. Swap
 						// the whole state atomically, same reasoning as SetBoost. Also re-sent to this

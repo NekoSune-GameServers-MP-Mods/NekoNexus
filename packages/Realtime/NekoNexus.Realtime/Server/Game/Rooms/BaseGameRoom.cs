@@ -212,6 +212,11 @@ namespace NekoNexus.Realtime.Server.Game {
 		/// Android player's real position replaces it with its first position update). A PC client's
 		/// upload later replaces the placeholder.
 		/// </summary>
+		/// <summary>Pickups reported by a 4.3.10 client (respawn times only).</summary>
+		internal void LoadPowerUpsWithoutPositions(List<ushort> respawnTimes) {
+			PowerUpManager.LoadWithoutPositions(respawnTimes);
+		}
+
 		internal void EnsureSpawnPoints(TeamID team) {
 			if (!SpawnPointManager.IsLoaded(team)) {
 				SpawnPointManager.Load(team, new List<Vector3> { Vector3.zero }, new List<byte> { 0 });

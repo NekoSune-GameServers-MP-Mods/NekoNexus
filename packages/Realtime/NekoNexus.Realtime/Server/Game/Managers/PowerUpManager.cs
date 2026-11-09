@@ -23,7 +23,19 @@ namespace NekoNexus.Realtime.Server.Game {
 			this.room = room ?? throw new ArgumentNullException(nameof(room));
 		}
 
+		/// <summary>True while the pickups were loaded from a 4.3.10 (Android) client, which sends
+		/// respawn times but no positions; see <see cref="LoadWithoutPositions"/>.</summary>
+		public bool HasUnknownPositions { get; private set; }
+
+		private static readonly Vector3 UnknownPosition = new Vector3(float.NaN, float.NaN, float.NaN);
+
 		public void Load(List<Vector3> positions, List<ushort> respawnTimes) {
+			// A PC client's upload (real positions) replaces pickups loaded from an Android client.
+			if (IsLoaded && HasUnknownPositions && positions != null && positions.Count == this.positions.Count) {
+				for (var i = 0; i < positions.Count; i++) this.positions[i] = positions[i];
+				HasUnknownPositions = false;
+				return;
+			}
 			if (IsLoaded) return;
 
 			this.positions.AddRange(positions);
@@ -34,10 +46,24 @@ namespace NekoNexus.Realtime.Server.Game {
 			}
 		}
 
+		/// <summary>
+		/// 4.3.10 clients report only each pickup's respawn time. Each position is learned from where
+		/// the player stands the first time the pickup is taken, and checked as usual from then on.
+		/// </summary>
+		public void LoadWithoutPositions(List<ushort> respawnTimes) {
+			if (IsLoaded || respawnTimes == null || respawnTimes.Count == 0) return;
+			Load(respawnTimes.Select(_ => UnknownPosition).ToList(), respawnTimes);
+			HasUnknownPositions = true;
+		}
+
 		public void PickUp(GamePeer peer, int pickupId, PickupItemType type, byte value) {
 			if (pickupId < 0 || pickupId >= positions.Count) {
 				Log.Warn($"Player {peer.Actor.Name}({peer.Actor.Cmid}) attempting to pick up unknown power-up with ID: {pickupId}");
 				return;
+			}
+
+			if (float.IsNaN(positions[pickupId].x)) {
+				positions[pickupId] = peer.Actor.Movement.Position;
 			}
 
 			var distance = Vector3.Distance(peer.Actor.Movement.Position, positions[pickupId]);

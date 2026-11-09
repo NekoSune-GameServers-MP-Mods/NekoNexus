@@ -70,6 +70,10 @@ enum WebSocketPacketType {
   // Game server -> web service (request/reply): live session of an Android (4.3.10) player,
   // who reaches realtime with only a CMID. { Cmid } -> { SessionId } (must match WebSocket.PacketType.cs).
   LegacySession = (1 << 10) + 25,
+  // Comm -> ws -> Game servers: Android in-match chat. { Cmid, Message, Context }.
+  LegacyRoomChat = (1 << 10) + 26,
+  // Game -> ws -> Comm: in-match chat for an Android phone. { TargetCmid, Cmid, ActorId, Name, Message, AccessLevel, Context }.
+  LegacyChatDeliver = (1 << 10) + 27,
 }
 
 export default WebSocketPacketType;

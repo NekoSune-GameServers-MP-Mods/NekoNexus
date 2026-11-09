@@ -185,6 +185,20 @@ namespace NekoNexus.Realtime.Server.Comm {
 						} catch (Exception ex) { Log.Error("NotifyClanChat failed", ex); }
 						break;
 					}
+					case PacketType.LegacyChatDeliver: {
+						try {
+							var data = (Dictionary<string, object>)e.Data;
+							Legacy.LegacyCommPeer.DeliverInGameChat(
+								Convert.ToInt64(data["TargetCmid"]),
+								Convert.ToInt32(data["Cmid"]),
+								Convert.ToInt32(data["ActorId"]),
+								Convert.ToString(data["Name"]),
+								Convert.ToString(data["Message"]),
+								Convert.ToByte(data["AccessLevel"]),
+								Convert.ToByte(data["Context"]));
+						} catch (Exception ex) { Log.Error("LegacyChatDeliver failed", ex); }
+						break;
+					}
 					case PacketType.NotifyPrivateChat: {
 						// Deliver a website friend DM to the target as an in-game private (whisper) chat
 						// message, if they're online. Offline = harmless no-op (the DM is stored on the web).

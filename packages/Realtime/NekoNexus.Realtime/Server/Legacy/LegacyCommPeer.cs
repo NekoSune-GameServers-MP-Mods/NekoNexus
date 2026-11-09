@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -47,6 +47,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			public const byte UpdateContacts = 44;         // (...)
 			public const byte SendUpdateAllPlayers = 47;   // ()
 			// both directions
+			public const byte InGameChat = 23;             // up: (int actorId, string msg, byte context)  down: (int cmid, int actorId, string name, string msg, byte access, byte context)
 			public const byte LobbyChat = 25;              // up: (int actorId, string msg)  down: (int cmid, int actorId, string name, string msg)
 			// server -> client
 			public const byte OnPlayerLeft = 2;            // (int cmid)
@@ -178,6 +179,9 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				case Method.SendUpdateAllPlayers:
 					SendFullPlayerList();
 					return true;
+				case Method.InGameChat:
+					HandleInGameChat(args);
+					return true;
 				case Method.LobbyChat:
 					HandleLobbyChat(args);
 					return true;
@@ -302,6 +306,36 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		}
 
 		// ------------------------------------------------------------------ chat
+
+		/// <summary>
+		/// In-match chat: 4.3.10 sends it to the comm server, but the match runs on a game server. Relay
+		/// it there through the web service; the player's stand-in posts it as normal room chat.
+		/// Same rate limit, cleanup and guest-chat setting as lobby chat.
+		/// </summary>
+		private void HandleInGameChat(object[] args) {
+			if (args.Length < 2 || !(args[1] is string rawMessage)) return;
+			var context = args.Length > 2 ? Convert.ToByte(args[2]) : (byte)0;
+
+			var now = DateTime.UtcNow;
+			if ((now - lastChatUtc).TotalMilliseconds < 750) return;
+			lastChatUtc = now;
+
+			var message = CleanMessage(rawMessage);
+			if (message.Length == 0 || !Config.EnableLegacyGuestChat) return;
+
+			CommServerApplication.Instance.SocketClient?.SendSync(PacketType.LegacyRoomChat, new Dictionary<string, object> {
+				{ "Cmid", Cmid },
+				{ "Message", message },
+				{ "Context", (int)context },
+			});
+		}
+
+		/// <summary>Deliver an in-match chat line to an Android player's phone (ClientCommCenter 23).</summary>
+		public static void DeliverInGameChat(long targetCmid, int cmid, int actorId, string name, string message, byte accessLevel, byte context) {
+			foreach (var peer in PeersWithCmid(targetCmid)) {
+				peer.SendCall(Method.InGameChat, cmid, actorId, name ?? "", message ?? "", accessLevel, context);
+			}
+		}
 
 		private void HandleLobbyChat(object[] args) {
 			// SendLobbyChatMessage sends (ActorIdSecure, message) - the first value is the actor id the

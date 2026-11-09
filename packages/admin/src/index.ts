@@ -12,6 +12,8 @@ import socialHtml from './social.html' with { type: 'text' };
 import shopHtml from './shop.html' with { type: 'text' };
 import apiDocsHtml from './apidocs.html' with { type: 'text' };
 import loginHtml from './login.html' with { type: 'text' };
+import linkHtml from './link.html' with { type: 'text' };
+import { checkLink, linkAccounts } from './accountLink';
 import { bearer, signToken, verifyToken } from './auth';
 import { loadConfig } from './config';
 import { initDatabase, sequelize } from './db';
@@ -758,6 +760,25 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const user = requireUser(req);
     if (!user) return json({ error: 'Please sign in first.' }, 401);
     return json(await buildMatchHistory(user.cmid, 25));
+  }
+
+  // ============================ Cross-save: link Steam + email accounts ============================
+  // Signed in with Steam; the email account is proven with its email + password. /check changes
+  // nothing and returns both profiles so the page can show what is kept and what is deleted.
+  if ((pathname === '/api/me/link/check' || pathname === '/api/me/link') && method === 'POST') {
+    const user = requireUser(req);
+    if (!user || !user.steamId) return json({ error: 'Sign in with Steam first.' }, 401);
+    const body = await req.json().catch(() => ({}));
+    if (pathname === '/api/me/link/check') {
+      const result = await checkLink(Number(user.cmid), String(user.steamId), body.email, body.password);
+      if (!result.ok) return json({ error: result.error }, 400);
+      return json({ steam: result.steam, email: result.email });
+    }
+    if (body.confirm !== 'DELETE') return json({ error: 'Confirmation missing.' }, 400);
+    if (body.primary !== 'steam' && body.primary !== 'email') return json({ error: 'Choose which profile to keep.' }, 400);
+    const result = await linkAccounts(sequelize, Number(user.cmid), String(user.steamId), body.email, body.password, body.primary);
+    if (!result.ok) return json({ error: result.error }, 400);
+    return json({ ok: true, cmid: result.cmid });
   }
 
   // ============================ Web social: friends ============================
@@ -1971,6 +1992,7 @@ Bun.serve({
     if (url.pathname === '/api/docs' || url.pathname === '/docs') return page(apiDocsHtml);
     if (url.pathname === '/streams') return page(streamsHtml);
     if (url.pathname === '/login') return page(loginHtml);
+    if (url.pathname === '/link') return page(linkHtml);
     if (url.pathname === '/profile' || url.pathname.startsWith('/profile/')) return page(profileHtml);
     // NekoPay return pages.
     if (url.pathname === '/pay/success' || url.pathname === '/pay/cancel') {

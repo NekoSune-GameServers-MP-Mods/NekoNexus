@@ -263,6 +263,17 @@ export default class NekoNexusService {
               }
             }
             break;
+          case WebSocketPacketType.LegacyRoomChat:
+            // Android in-match chat (sent by the phone to the comm server) -> the game server that
+            // hosts the player's match.
+            if (e.ServerType !== ServerType.Comm) break;
+            this.SocketHost.SendToGameServers(WebSocketPacketType.LegacyRoomChat, e.Data);
+            break;
+          case WebSocketPacketType.LegacyChatDeliver:
+            // In-match chat for an Android player -> their phone, which listens on the comm server.
+            if (e.ServerType !== ServerType.Game) break;
+            await this.SocketHost.SendToCommServer(WebSocketPacketType.LegacyChatDeliver, e.Data);
+            break;
           case WebSocketPacketType.LegacySession: {
             // A game server asks for the live session of an Android (4.3.10) player, so the player's
             // server-side stand-in in a PC room can load their profile and loadout like a PC player.
@@ -276,6 +287,7 @@ export default class NekoNexusService {
                     order: [['ExpireTime', 'DESC']],
                   })
                 : null;
+            session?.extendExpireTime(); // an Android player in a match keeps their session alive
             await e.Socket.Send(
               WebSocketPacketType.LegacySession,
               { SessionId: session?.SessionId ?? '' },
