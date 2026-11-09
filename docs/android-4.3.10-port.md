@@ -47,3 +47,17 @@ are configured.
 
 This is a compatibility port, not a validated release: the 2012 Unity runtime and shaders may
 still fail on modern Android GPUs/versions, and realtime protocol behavior needs a device test.
+
+## Maps
+
+The APK only contains the Menu and Tutorial scenes. Every other map is downloaded at match
+load from `<ContentBaseUrl>Maps/4.3.10/<FileName>`, where `FileName` comes from `GetMaps`.
+Unity 4 asset bundles only load on the platform they were built for, so the PC `-HD.unity3d`
+maps do not work here: the files must be **Android builds made with Unity 4.0**.
+
+Put them in `server-data/android-content/UberStrike/Maps/4.3.10/` (served at
+`http://SERVER_HOST:8081/UberStrike/Maps/4.3.10/`). When the client asks for Android maps,
+`GetMaps` only lists maps that have a file there, matched by map name:
+`AqualabResearchHub.unity3d` or `AqualabResearchHub-<anything>.unity3d` (case-insensitive;
+a name containing `Android` wins over others). The folder is re-read on every request, so new
+maps appear without a restart. The web-services log prints how many Android maps were found.

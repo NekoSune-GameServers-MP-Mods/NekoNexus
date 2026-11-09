@@ -15,7 +15,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+import { Log } from '@/utils';
 import { ApiVersion } from '@/utils/enums';
+import fs from 'fs';
+import path from 'path';
 import { withServerRegionFlag } from '../../serverRegion';
 import { Map, MapSettings, PhotonServer, UserAccount } from '@festivaldev/nekonexus-models';
 import { BuildType, ChannelType, PhotonUsageType } from '@festivaldev/uberstrike-js/Cmune/DataCenter/Common/Entities';
@@ -53,6 +56,46 @@ export default class ApplicationWebService extends BaseWebService {
     ChannelType.OSXStandalone,
     ChannelType.Android,
   ];
+
+  /** Folder served at <ContentBaseUrl>Maps/4.3.10/ for the Android client, or null if not configured. */
+  static androidMapsDir(): string | null {
+    const root = process.env.NEKONEXUS_ANDROID_CONTENT_DIR?.trim();
+    return root ? path.join(path.resolve(root), 'UberStrike/Maps/4.3.10') : null;
+  }
+
+  /** Android map bundles currently hosted (re-read on every GetMaps, so dropping files in needs no restart). */
+  static listAndroidMapFiles(): string[] {
+    const dir = ApplicationWebService.androidMapsDir();
+    if (!dir || !fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter((file) => file.toLowerCase().endsWith('.unity3d'));
+  }
+
+  /**
+   * Picks the hosted Android bundle for a map. Matches the map's base name, taken from its
+   * 4.3.10 filename ("AqualabResearchHub-<hash>-HD.unity3d" -> "AqualabResearchHub") or its scene
+   * name, against "<Base>.unity3d" or "<Base>-<anything>.unity3d" (case-insensitive). If several
+   * match, a name containing "android" wins, then any name that isn't the PC "-HD" build.
+   */
+  static findAndroidMapFile(map: Map, files: string[]): string | null {
+    const bases = new Set<string>();
+    const pcFile = map.FileName?.['4.3.10'];
+    if (pcFile) bases.add(pcFile.split('-')[0].replace(/\.unity3d$/i, '').toLowerCase());
+    for (const scene of [map.SceneName?.['4.3.10'], map.SceneName?.default]) {
+      if (scene) bases.add(scene.toLowerCase());
+    }
+
+    const candidates = files.filter((file) => {
+      const name = file.toLowerCase();
+      return [...bases].some((base) => name === `${base}.unity3d` || name.startsWith(`${base}-`));
+    });
+    if (!candidates.length) return null;
+
+    return (
+      candidates.find((file) => file.toLowerCase().includes('android')) ??
+      candidates.find((file) => !file.toLowerCase().endsWith('-hd.unity3d')) ??
+      candidates[0]
+    );
+  }
 
   static async GetPhotonServers(data: number[], outputStream: number[]): Promise<number[] | null> {
     const isEncrypted = this.isEncrypted(data);
@@ -293,17 +336,28 @@ export default class ApplicationWebService extends BaseWebService {
       this.debugEndpoint('GetMaps', appVersion, locale, definition);
 
       if (ApplicationWebService.supportedClientVersions.includes(appVersion)) {
+        const isAndroid = definition === DefinitionType.Android;
+        const androidMapFiles = isAndroid ? ApplicationWebService.listAndroidMapFiles() : [];
+
         const maps = await Map.findAll().then((mapList) =>
-          mapList.filter(
-            (map) =>
-              map.FileName?.['4.3.10'] !== undefined &&
-              // Only advertise maps whose scene ships with the standard client. The "extra" maps
-              // (Space City / Spaceport Alpha / UberZone) carry a real 4.7.1 filename rather than
-              // an empty one; their .unity3d isn't in the build, so loading them throws
-              // "Couldn't open file ...". Matches the v2 GetMaps exclusion.
-              !map.FileName?.['4.7.1']?.length,
-          ),
+          mapList.filter((map) => {
+            if (map.FileName?.['4.3.10'] === undefined) return false;
+            // Android: advertise a map only when an Android-built bundle for it is hosted,
+            // otherwise the client lists it and then fails to download it.
+            if (isAndroid) return ApplicationWebService.findAndroidMapFile(map, androidMapFiles) !== null;
+            // Only advertise maps whose scene ships with the standard client. The "extra" maps
+            // (Space City / Spaceport Alpha / UberZone) carry a real 4.7.1 filename rather than
+            // an empty one; their .unity3d isn't in the build, so loading them throws
+            // "Couldn't open file ...". Matches the v2 GetMaps exclusion.
+            return !map.FileName?.['4.7.1']?.length;
+          }),
         );
+
+        if (isAndroid) {
+          Log.info(
+            `[GetMaps] Android: ${maps.length} map(s) with hosted bundles (${androidMapFiles.length} file(s) in ${ApplicationWebService.androidMapsDir() ?? '<NEKONEXUS_ANDROID_CONTENT_DIR not set>'})`,
+          );
+        }
 
         const mapSettings = await MapSettings.findAll({
           raw: true,
@@ -313,7 +367,9 @@ export default class ApplicationWebService extends BaseWebService {
           acc.push({
             ...cur.get({ plain: true }),
             SceneName: cur.SceneName['4.3.10'] || cur.SceneName.default,
-            FileName: cur.FileName?.['4.3.10'],
+            FileName: isAndroid
+              ? ApplicationWebService.findAndroidMapFile(cur, androidMapFiles)
+              : cur.FileName?.['4.3.10'],
             Settings: mapSettings
               .filter((_) => _.MapId === cur.MapId)
               .reduce((acc: { [key: number]: any }, cur) => {

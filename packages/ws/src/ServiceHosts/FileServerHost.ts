@@ -85,6 +85,13 @@ export default class FileServerHost {
         '/UberStrike/Items/4.3.10/',
         express.static(path.join(path.resolve(androidContentRoot), 'UberStrike/Items/4.3.10')),
       );
+      // Maps are not shipped in the APK: the client downloads each one from
+      // <ContentBaseUrl>Maps/4.3.10/<FileName>, with FileName taken from GetMaps.
+      // Android-built map bundles go in <android-content>/UberStrike/Maps/4.3.10/.
+      this.expressApp.use(
+        '/UberStrike/Maps/4.3.10/',
+        express.static(path.join(path.resolve(androidContentRoot), 'UberStrike/Maps/4.3.10')),
+      );
     }
 
     this.expressApp.use('/', express.static(path.join(process.cwd(), 'wwwroot')));
