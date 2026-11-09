@@ -43,6 +43,8 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			try {
 				if (request.OperationCode == LegacyOperationCode.MessageToApplication) {
 					HandleApplicationMessage(request);
+				} else if (TryHandleSyncCenter(request)) {
+					// network class registration, answered for every 4.3.10 peer type
 				} else if (!OnLegacyOperation(request)) {
 					WarnUnsupportedOnce($"opcode:0x{request.OperationCode:X2}", $"legacy opcode 0x{request.OperationCode:X2} not supported yet (params: {DescribeKeys(request)})");
 				}
@@ -83,6 +85,83 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			response.Parameters[LegacyParameterKey.InvocationId] = invocationId;
 			response.Parameters[LegacyParameterKey.Data] = LegacySerialization.ToBytes(reply ?? new object[0]);
 			SendOperationResponse(response, new SendParameters());
+		}
+
+		// ------------------------------------------------------------------ network class registration
+
+		/// <summary>Server-side SynchronizationCenter the client addresses with MessageToServer.</summary>
+		public const short ServerSyncCenterNetworkId = 2;
+		/// <summary>Client-side SynchronizationCenter (always registered, fixed id).</summary>
+		public const short ClientSyncCenterNetworkId = 1;
+		private const byte RegisterStaticNetworkClass = 3;   // ServerSyncCenterRPC: (int actorId, int instanceId, short networkId)
+		private const byte UnregisterNetworkClass = 1;       // ServerSyncCenterRPC
+		private const byte OnRecieveNetworkID = 1;           // ClientSyncCenterRPC: (int instanceId, short networkId)
+
+		private readonly HashSet<short> registeredNetworkClasses = new HashSet<short>();
+
+		/// <summary>Network classes (ClientCommCenter 4, game modes 100/101/106 ...) this client has registered.</summary>
+		protected bool IsNetworkClassRegistered(short networkId) {
+			lock (registeredNetworkClasses) return registeredNetworkClasses.Contains(networkId);
+		}
+
+		/// <summary>
+		/// Every 4.3.10 network class except the client SynchronizationCenter (id 1) - including the
+		/// fixed-id ClientCommCenter (4) and the game modes (100, 101, 106) - stays uninitialised
+		/// until the server confirms its registration: RemoteMethodInterface.RegisterGlobalNetworkClass
+		/// queues it, RegisterAllClasses sends ServerSyncCenter.RegisterStaticNetworkClass once the room
+		/// is joined, and only SynchronizationCenter.OnRecieveNetworkID(instanceId, networkId) calls
+		/// Initialize. Until then the client sends nothing from that class (ClientCommCenter.JoinCommServer
+		/// checks IsInitialized) and buffers every incoming call to it - so without this reply Android
+		/// players never joined the lobby roster or chat.
+		/// </summary>
+		private bool TryHandleSyncCenter(OperationRequest request) {
+			if (request.OperationCode != LegacyOperationCode.MessageToServer) return false;
+			if (!request.Parameters.TryGetValue(LegacyParameterKey.InstanceId, out var instanceObj) || !(instanceObj is short networkTarget)
+				|| networkTarget != ServerSyncCenterNetworkId) return false;
+			if (!request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var methodObj) || !(methodObj is byte methodId)) return true;
+
+			object[] args;
+			try {
+				request.Parameters.TryGetValue(LegacyParameterKey.Bytes, out var raw);
+				args = LegacySerialization.ToObjects(raw as byte[]);
+			} catch (LegacyProtocolException ex) {
+				Log.Warn($"[{Name}] cmid {Cmid}: unreadable ServerSyncCenter call {methodId}: {ex.Message}");
+				return true;
+			}
+
+			switch (methodId) {
+				case RegisterStaticNetworkClass:
+					if (args.Length >= 3 && args[1] is int instanceId && args[2] is short networkId) {
+						lock (registeredNetworkClasses) registeredNetworkClasses.Add(networkId);
+						SendNetworkCall(ClientSyncCenterNetworkId, OnRecieveNetworkID, instanceId, networkId);
+						Log.Info($"[{Name}] cmid {Cmid}: registered network class {networkId} (instance {instanceId})");
+						OnNetworkClassRegistered(networkId);
+					} else {
+						Log.Warn($"[{Name}] cmid {Cmid}: RegisterStaticNetworkClass with unexpected args ({DescribeArgs(args)})");
+					}
+					return true;
+				case UnregisterNetworkClass:
+					return true;
+				default:
+					WarnUnsupportedOnce($"sync:{methodId}", $"ServerSyncCenter method {methodId} not supported yet (args: {DescribeArgs(args)})");
+					return true;
+			}
+		}
+
+		/// <summary>Called after a network class was confirmed to the client.</summary>
+		protected virtual void OnNetworkClassRegistered(short networkId) { }
+
+		/// <summary>Call a method of a client network class (event code 0).</summary>
+		protected void SendNetworkCall(short networkId, byte methodId, params object[] args) {
+			try {
+				SendEvent(new EventData(LegacyEventCode.NetworkMessage, new Dictionary<byte, object> {
+					{ LegacyParameterKey.InstanceId, networkId },
+					{ LegacyParameterKey.MethodId, methodId },
+					{ LegacyParameterKey.Bytes, LegacySerialization.ToBytes(args) }
+				}), new SendParameters());
+			} catch (Exception ex) {
+				Log.Warn($"[{Name}] cmid {Cmid}: failed to call network class {networkId} method {methodId}", ex);
+			}
 		}
 
 		/// <summary>Method 1, sent by every 4.3.10 client right after connecting.</summary>

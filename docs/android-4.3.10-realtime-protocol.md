@@ -97,7 +97,12 @@ Everything else is logged by the client as `UNHANDLED EventAction`.
 `ReturnCode 0` with `{9: actor id (int), 4: CmuneRoomID bytes, 200: false (ClearLevel), 201: long}`;
 only then `HasJoinedRoom` is true and `ClientCommCenter` calls are sent.
 
-`ClientCommCenter` is a global network class with the fixed id **4** (no registration needed).
+`ClientCommCenter` is a global network class with the fixed id **4**, but it still has to be
+**registered**: every network class except the client SynchronizationCenter (id 1) stays uninitialised
+until the server answers `ServerSyncCenter` (id 2) method 3 `RegisterStaticNetworkClass(int actorId,
+int instanceId, short networkId)` with event 0 to id 1, method 1 `OnRecieveNetworkID(int instanceId,
+short networkId)`. The client sends the request right after a room join; until it is answered
+`JoinCommServer` is never sent and incoming calls are buffered. `LegacyPeer` answers it for every peer.
 Client -> server calls are `MessageToServer 0x52 {101: 4, 100: method, 103: args}`:
 
 | Id | Method | Args | Server |
