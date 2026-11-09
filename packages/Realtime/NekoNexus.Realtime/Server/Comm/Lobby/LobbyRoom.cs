@@ -62,6 +62,8 @@ namespace NekoNexus.Realtime.Server.Comm {
 				peers.Remove(peer);
 			}
 
+			if (peer.Actor != null) Legacy.LegacyCommPeer.BroadcastPlayerLeft(peer.Actor.Cmid);
+
 			Log.Info($"{peer} left the lobby");
 
 			CommServerApplication.Instance.SocketClient?.SendSync(PacketType.PlayerLeft, peer, serverType: ServerType.Comm);

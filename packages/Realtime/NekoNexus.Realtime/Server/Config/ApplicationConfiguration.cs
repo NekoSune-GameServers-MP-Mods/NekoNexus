@@ -42,9 +42,10 @@ namespace NekoNexus.Realtime.Server {
 		[YamlMember]
 		public bool EnableChatLog = true;
 
-		// Compatibility/testing only: legacy 4.3.10 currently supplies CMID without
-		// a verifiable per-session credential. Keep guest chat disabled until the
-		// Android patcher and server exchange an authenticated ticket.
+		// Relay lobby chat from Android (4.3.10) players to PC players. 4.3.10 supplies its
+		// CMID and name without a verifiable session ticket, so relayed messages are sent as
+		// "Name [Android]" with CMID 0 (see docs/android-4.3.10-realtime-protocol.md).
+		// PC -> Android chat and the shared roster work regardless of this setting.
 		[YamlMember]
 		public bool EnableLegacyGuestChat = false;
 

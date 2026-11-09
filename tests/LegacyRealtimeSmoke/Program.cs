@@ -33,6 +33,27 @@ internal static class Program {
         Assert(LegacyOperationCode.MessageToServer == 0x52 &&
                LegacyOperationCode.MessageToAll == 0x51, "legacy operation codes");
 
+        // SyncObject (CommActorInfo): [mask][id][typed fields], bit 0 is written twice.
+        var actor = new LegacySyncObject { Id = 5 };
+        actor[LegacyActorField.Cmid] = 9;
+        actor[LegacyActorField.PlayerName] = "Ab";
+        actor[LegacyActorField.AccessLevel] = (byte)3;
+        var actorBytes = LegacySerialization.ToBytes(actor);
+        var expectedActor = new byte[] { 0x30, 0,0,0,0x43, 0,0,0,5, 0x06,0,0,0,9, 0x0C,0,2,(byte)'A',0,(byte)'b',0, 0x01,3, 0x06,0,0,0,9 };
+        Assert(actorBytes.Length == expectedActor.Length, "sync object length");
+        for (var k = 0; k < expectedActor.Length; k++) Assert(actorBytes[k] == expectedActor[k], "sync object byte " + k);
+        var actorBack = (LegacySyncObject)LegacySerialization.ToObjects(actorBytes)[0];
+        Assert(actorBack.Id == 5 && (int)actorBack[LegacyActorField.Cmid] == 9 && (string)actorBack[LegacyActorField.PlayerName] == "Ab", "sync object round trip");
+        var actorList = LegacySerialization.ToObjects(LegacySerialization.ToBytes(new System.Collections.Generic.List<LegacySyncObject> { actor, actor }));
+        Assert(actorList.Length == 1 && ((System.Collections.Generic.List<LegacySyncObject>)actorList[0]).Count == 2, "sync object list");
+
+        // RoomMetaData from PhotonGameJoin: small strings, 3 bytes, CmuneRoomID (int + ip + port).
+        var room = new System.Collections.Generic.List<byte> { 0x28, 1, (byte)'C', 0, 0, 16, 2, 0, 0,0,0,0x58, 75,119,148,51, 0x13,0xBF };
+        var meta = (LegacyRoomMetaData)LegacySerialization.ToObjects(room.ToArray())[0];
+        Assert(meta.Name == "C" && meta.MaxPlayers == 16 && meta.RoomId.Number == 88 && meta.RoomId.Server == "75.119.148.51:5055", "room metadata");
+        Assert(meta.RoomId.ToBytes().Length == LegacyRoomId.Size, "room id size");
+        Assert(LegacyEventCode.NetworkMessage == 0, "remote calls use event code 0");
+
         Console.WriteLine("Android 4.3.10 legacy codec smoke tests passed.");
         return 0;
     }

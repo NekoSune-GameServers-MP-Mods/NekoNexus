@@ -13,17 +13,29 @@ namespace NekoNexus.Realtime.Server.Comm {
 
 		private readonly object _lock = new object();
 
+		/// <summary>PC lobby players plus Android (4.3.10) players connected to this comm server.</summary>
+		public List<CommActorInfo> GetAllActorInfos() {
+			var actorsInfo = new List<CommActorInfo>(Peers.Count);
+			var cmids = new HashSet<int>();
+			foreach (var peer in Peers) {
+				if (peer?.Actor?.ActorInfo == null) continue;
+				actorsInfo.Add(peer.Actor.ActorInfo);
+				cmids.Add(peer.Actor.Cmid);
+			}
+			actorsInfo.AddRange(Legacy.LegacyCommPeer.GetLobbyActorInfos(cmids));
+			return actorsInfo;
+		}
+
 		public void UpdatePlayerList() {
 			lock (_lock) {
-				var actorsInfo = new List<CommActorInfo>(Peers.Count);
-				foreach (var peer in Peers) {
-					actorsInfo.Add(peer.Actor.ActorInfo);
-				}
+				var actorsInfo = GetAllActorInfos();
 
 				foreach (var peer in Peers) {
 					peer.LobbyEventSender.SendFullPlayerListUpdate(actorsInfo);
 				}
 			}
+
+			Legacy.LegacyCommPeer.BroadcastFullPlayerList();
 		}
 	}
 }

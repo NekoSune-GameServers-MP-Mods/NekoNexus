@@ -153,7 +153,7 @@ namespace NekoNexus.Realtime.Server.Comm {
 					// Previously this sent N duplicate responses for N other peers,
 					// and no response at all when the lobby contained only the requester.
 					peer.LobbyEventSender.SendFullPlayerListUpdate(
-						LobbyManager.Instance.Peers.Where(p => p.Actor != null).Select(p => p.Actor.ActorInfo).ToList());
+						LobbyManager.Instance.GetAllActorInfos());
 				}
 			}
 
@@ -166,7 +166,7 @@ namespace NekoNexus.Realtime.Server.Comm {
 
 				foreach (var otherPeer in LobbyManager.Instance.Peers) {
 					if (peer.Actor.Cmid != otherPeer.Actor.Cmid) {
-						otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.Peers.Select(_ => _.Actor.ActorInfo).ToList());
+						otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.GetAllActorInfos());
 					}
 				}
 			}
@@ -180,7 +180,7 @@ namespace NekoNexus.Realtime.Server.Comm {
 					lock (Lock) {
 						foreach (var otherPeer in LobbyManager.Instance.Peers) {
 							if (peer.Actor.Cmid != otherPeer.Actor.Cmid) {
-								otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.Peers.Select(_ => _.Actor.ActorInfo).ToList());
+								otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.GetAllActorInfos());
 							}
 						}
 					}
@@ -298,6 +298,10 @@ namespace NekoNexus.Realtime.Server.Comm {
 							otherPeer.LobbyEventSender.SendLobbyChatMessage(peer.Actor.Cmid, peer.Actor.Name, trimmed);
 						}
 					}
+
+					// Android (4.3.10) players on this comm server; the master server does not echo
+					// chat back to the server it came from.
+					Legacy.LegacyCommPeer.BroadcastLobbyChat(peer.Actor.Cmid, peer.Actor.Name, trimmed);
 				}
 			}
 
@@ -514,7 +518,7 @@ namespace NekoNexus.Realtime.Server.Comm {
 				DebugOperation(peer);
 
 				if (peer.Actor.AccessLevel >= MemberAccessLevel.Moderator) {
-					peer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.Peers.Select(_ => _.Actor.ActorInfo).ToList());
+					peer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.GetAllActorInfos());
 				}
 			}
 

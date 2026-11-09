@@ -31,8 +31,21 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		public const byte RegisterGameServer = 0x5C;
 	}
 
+	/// <summary>
+	/// Event codes the 4.3.10 PhotonPeerListener.OnEvent understands. Code 0 is a remote call:
+	/// {101: network id (short), 100: method id (byte), 103: args}. 3/4/5 are lobby room-list
+	/// update / refresh / removal with a Hashtable in key 42. Anything else is logged as unhandled.
+	/// </summary>
+	public static class LegacyEventCode {
+		public const byte NetworkMessage = 0;
+		public const byte RoomListUpdate = 3;
+		public const byte RoomListRefresh = 4;
+		public const byte RoomListRemoval = 5;
+	}
+
 	/// <summary>Photon parameter keys used by the 4.3.10 SDK (ParameterKeys).</summary>
 	public static class LegacyParameterKey {
+		/// <summary>PhotonGameJoin reply: CmuneRoomID bytes of the joined room.</summary>
 		public const byte GameId = 4;
 		public const byte ActorNr = 9;
 		public const byte Actors = 11;
@@ -48,6 +61,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		public const byte RoomId = 120;
 		public const byte LobbyRoomUpdate = 122;
 		public const byte LobbyRoomDelete = 123;
+		/// <summary>PhotonGameJoin reply, bool: true = BuildLevel, false = ClearLevel.</summary>
 		public const byte InitRoom = 200;
 		public const byte ServerTicks = 201;
 		public const byte AccessLevel = 205;
