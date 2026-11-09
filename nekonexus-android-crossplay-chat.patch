@@ -1,0 +1,1072 @@
+From 8dbdaf516cbc03f98409f22fa123acd95051b2b6 Mon Sep 17 00:00:00 2001
+From: NekoSuneVR <grantrobinson100@gmail.com>
+Date: Mon, 9 Nov 2026 14:07:54 +0000
+Subject: [PATCH] feat(android): crossplay lobby chat and roster for 4.3.10
+ clients
+
+- answer PhotonGameJoin on the comm server (actor id, CmuneRoomID, ClearLevel)
+- ClientCommCenter (network id 4): JoinCommServer, roster, lobby chat
+- server -> client calls use event code 0 (the only code the client treats as RPC)
+- chat from Android: actor id is ignored, identity from the connection, relayed as
+  'Name [Android]' with CMID 0 when EnableLegacyGuestChat is on
+- PC lobby chat on the same comm server now reaches Android players too
+- Android players appear in the PC roster and PC players in the Android roster
+- LegacySerialization: RoomData, RoomId, SyncObject/CommActorInfo, lists, Vector3/Quaternion
+- smoke tests for the new types; protocol docs updated
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01U5G7hXb6tWbughHAPUXrrJ
+---
+ docs/android-4.3.10-realtime-protocol.md      |  81 +++-
+ .../Server/Comm/Lobby/LobbyManager.cs         |  20 +-
+ .../Comm/Lobby/LobbyRoom.OperationHandler.cs  |  12 +-
+ .../Server/Comm/Lobby/LobbyRoom.cs            |   2 +
+ .../Server/Config/ApplicationConfiguration.cs |   7 +-
+ .../Server/Legacy/LegacyCommPeer.cs           | 432 +++++++++++++++---
+ .../Server/Legacy/LegacyProtocol.cs           |  14 +
+ .../Server/Legacy/LegacySerialization.cs      | 218 ++++++++-
+ tests/LegacyRealtimeSmoke/Program.cs          |  21 +
+ 9 files changed, 712 insertions(+), 95 deletions(-)
+
+diff --git a/docs/android-4.3.10-realtime-protocol.md b/docs/android-4.3.10-realtime-protocol.md
+index aa35b4d..736bf73 100644
+--- a/docs/android-4.3.10-realtime-protocol.md
++++ b/docs/android-4.3.10-realtime-protocol.md
+@@ -66,17 +66,80 @@ PhysicsPack `2C`, RoomId `2D`, CommActorInfo `2E`, PerformanceData `2F`, SyncObj
+ Array_RoomId `33`, Array_SyncObject `35`, ActorInfo `65`, ShortVector `66`, GameData `67`,
+ Armor `68`, Weapons `69`, Statistics `6A`, DamageEvent `6B`, Stats `6C`, EndOfMatch `6D`,
+ Array_GameData `6F`. `LegacySerialization` implements the primitives, byte arrays and
+-ServerLoadData; the game types are still to do.
++ServerLoadData, RoomData, RoomId, SyncObject/CommActorInfo and their lists, Array_Short/Int/String,
++Vector3 and Quaternion; the game types (`65`+) are still to do.
++
++Strings inside RoomData are "small" strings: `[byte length][UTF-16LE]`, max 127 chars.
++`SyncObject` is `[int32 mask]` and, if the mask is not 0, `[int32 id]` then one type-prefixed value
++per set bit. The client walks bits `0..32` with `1 << (i & 31)`, so **bit 0 is written and read
++twice**; `LegacySyncObject` reproduces that, otherwise lists of actors go out of step.
++
++## Server -> client calls
++
++`PhotonPeerListener.OnEvent` only understands these event codes:
++
++| Code | Meaning | Parameters |
++|------|---------|------------|
++| `0` | remote call to a network class | `101` network id (short), `100` method (byte), `103` args |
++| `3` | room list update (full refresh) | `42` Hashtable `{122: ToBytes(List<RoomData>)}` |
++| `4` | room list update | same as 3 |
++| `5` | room list removal | `42` Hashtable `{123: ToBytes(List<RoomId>)}` |
++
++Everything else is logged by the client as `UNHANDLED EventAction`.
++
++## Comm server and lobby chat (implemented)
++
++`CommConnectionManager` joins `RoomMetaData(88, "The CommServer", <comm server>)` with
++`PhotonGameJoin 0x58` `{103: ToBytes([RoomData]), 206: cmid, 205: access level}`. The reply must be
++`ReturnCode 0` with `{9: actor id (int), 4: CmuneRoomID bytes, 200: false (ClearLevel), 201: long}`;
++only then `HasJoinedRoom` is true and `ClientCommCenter` calls are sent.
++
++`ClientCommCenter` is a global network class with the fixed id **4** (no registration needed).
++Client -> server calls are `MessageToServer 0x52 {101: 4, 100: method, 103: args}`:
++
++| Id | Method | Args | Server |
++|----|--------|------|--------|
++| 1 | JoinCommServer | CommActorInfo (SyncObject) | name read, roster sent, PC lobby refreshed |
++| 3 | SendUpdatedActorInfo | CommActorInfo | name updated |
++| 4 / 47 | SendUpdateResetLobby / SendUpdateAllPlayers | - | roster resent |
++| 25 | SendLobbyChatMessage | **(int actorId, string message)** - not the CMID | relayed (see below) |
++| 21, 22, 43, 44 | room / contacts updates | various | accepted, ignored |
++
++Server -> client (event code 0, network id 4): `2 OnPlayerLeft(int cmid)`,
++`3 OnPlayerUpdate(SyncObject)`, `4 OnFullPlayerListUpdate(List<SyncObject>)`,
++`25 OnLobbyChatMessage(int cmid, int actorId, string name, string message)`.
++ActorInfo fields (`CMUNESYNC` bits): Cmid `0x01` int, PlayerName `0x02` string, Channel `0x04`
++byte, CurrentRoom `0x08` RoomId, Ping `0x10` ushort, ClanTag `0x20` string, AccessLevel `0x40`
++byte, ModInformation `0x200` string, ModerationFlag `0x400` byte. Types must match exactly: the
++client copies them into the fields with reflection.
++
++What players see:
++
++- Android players get the full lobby roster (PC and Android) and every PC lobby message.
++- PC players see Android players in the lobby list as `Name [Android]`.
++- Android chat reaches PC players (this comm server directly, other comm servers through the
++  master socket) as `Name [Android]` with **CMID 0**, only when `EnableLegacyGuestChat: true` is
++  set in the realtime configuration. With it off, the Android player gets one System line saying so.
++
++Why opt-in: 4.3.10 sends its CMID as the Photon application id and its name in CommActorInfo, with
++no session ticket the server can check, so a modified client can claim any CMID or name. CMID 0
++keeps PC moderation (mute/ban by CMID) from ever hitting a real account because of a forged id,
++the `[Android]` tag keeps forged names from passing as PC players, the access level the client
++claims is ignored, and messages are rate-limited (750 ms), stripped of control characters, cut to
++140 characters and profanity-filtered. A proper fix is a login ticket from the web services that
++the patched APK passes on connect.
+ 
+ ## Status
+ 
+ | Phase | Scope | State |
+ |-------|-------|-------|
+-| 1 | Accept 4.3.10 peers, handshake, server load (servers appear with live PC counts) | **Done** (`Server/Legacy`, unit-tested serializer) |
+-| 2 | Comm/lobby: game list (`0x5A`/`0x5B` events, RoomData/GameData types), chat | To do |
+-| 3 | Join/leave (`0x58`/`0x59`) into the shared `GameRoomManager` rooms | To do |
+-| 4 | In-match sync: translate `0x50`–`0x53` instance/method calls to and from the 4.7.1 room events so Android and PC players see each other | To do |
+-
+-Unimplemented legacy opcodes and methods are logged at debug level by `LegacyPeer`
+-(`legacy opcode 0x.. not supported yet`, `application method N not supported yet`), with the
+-parameter keys and decoded argument types, which is the quickest way to find what to build next.
++| 1 | Accept 4.3.10 peers, handshake, server load (servers appear with live PC counts) | **Done** |
++| 2a | Comm: join, roster both ways, lobby chat both ways | **Done** (`LegacyCommPeer`, unit-tested) |
++| 2b | Game list: events 3/4/5 with a Hashtable (needs Hashtable support in `NekoNexusWire` on **both** shims, so a new APK) and RoomData/GameData (`67`) for PC rooms | To do |
++| 3 | Join/leave (`0x58`/`0x59`) on the game server into the shared `GameRoomManager` rooms; dynamic network-id registration (RMI network class 1, methods 2/3 -> `RecieveRegistrationConfirmation(instanceId, networkId)`) for the game-mode classes (`FpsGameMode`, `TeamDeathMatchGameMode` 100, `DeathMatchGameMode` 101, `TeamEliminationGameMode` 106) | To do |
++| 4 | In-match: about 40 game RPCs (`FpsGameMode` 20, `ClientGameMode` 7, mode classes 11) and the game types (`65`-`6F`: ActorInfo, GameData, Transform, DamageEvent, EndOfMatch ...) translated to and from the 4.7.1 room protocol, plus item-id / map / mode mapping between 4.3.10 and 4.7.1 | To do |
++
++Unimplemented legacy opcodes and methods are logged once per connection at warning level by
++`LegacyPeer` (`legacy opcode 0x.. not supported yet`, `application method N not supported yet`),
++with the parameter keys and decoded argument types, which is the quickest way to find what to build
++next.
+diff --git a/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyManager.cs b/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyManager.cs
+index d274bec..e1089dd 100644
+--- a/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyManager.cs
++++ b/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyManager.cs
+@@ -13,17 +13,29 @@ namespace NekoNexus.Realtime.Server.Comm {
+ 
+ 		private readonly object _lock = new object();
+ 
++		/// <summary>PC lobby players plus Android (4.3.10) players connected to this comm server.</summary>
++		public List<CommActorInfo> GetAllActorInfos() {
++			var actorsInfo = new List<CommActorInfo>(Peers.Count);
++			var cmids = new HashSet<int>();
++			foreach (var peer in Peers) {
++				if (peer?.Actor?.ActorInfo == null) continue;
++				actorsInfo.Add(peer.Actor.ActorInfo);
++				cmids.Add(peer.Actor.Cmid);
++			}
++			actorsInfo.AddRange(Legacy.LegacyCommPeer.GetLobbyActorInfos(cmids));
++			return actorsInfo;
++		}
++
+ 		public void UpdatePlayerList() {
+ 			lock (_lock) {
+-				var actorsInfo = new List<CommActorInfo>(Peers.Count);
+-				foreach (var peer in Peers) {
+-					actorsInfo.Add(peer.Actor.ActorInfo);
+-				}
++				var actorsInfo = GetAllActorInfos();
+ 
+ 				foreach (var peer in Peers) {
+ 					peer.LobbyEventSender.SendFullPlayerListUpdate(actorsInfo);
+ 				}
+ 			}
++
++			Legacy.LegacyCommPeer.BroadcastFullPlayerList();
+ 		}
+ 	}
+ }
+diff --git a/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.OperationHandler.cs b/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.OperationHandler.cs
+index 547ec43..ca46f6f 100644
+--- a/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.OperationHandler.cs
++++ b/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.OperationHandler.cs
+@@ -153,7 +153,7 @@ namespace NekoNexus.Realtime.Server.Comm {
+ 					// Previously this sent N duplicate responses for N other peers,
+ 					// and no response at all when the lobby contained only the requester.
+ 					peer.LobbyEventSender.SendFullPlayerListUpdate(
+-						LobbyManager.Instance.Peers.Where(p => p.Actor != null).Select(p => p.Actor.ActorInfo).ToList());
++						LobbyManager.Instance.GetAllActorInfos());
+ 				}
+ 			}
+ 
+@@ -166,7 +166,7 @@ namespace NekoNexus.Realtime.Server.Comm {
+ 
+ 				foreach (var otherPeer in LobbyManager.Instance.Peers) {
+ 					if (peer.Actor.Cmid != otherPeer.Actor.Cmid) {
+-						otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.Peers.Select(_ => _.Actor.ActorInfo).ToList());
++						otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.GetAllActorInfos());
+ 					}
+ 				}
+ 			}
+@@ -180,7 +180,7 @@ namespace NekoNexus.Realtime.Server.Comm {
+ 					lock (Lock) {
+ 						foreach (var otherPeer in LobbyManager.Instance.Peers) {
+ 							if (peer.Actor.Cmid != otherPeer.Actor.Cmid) {
+-								otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.Peers.Select(_ => _.Actor.ActorInfo).ToList());
++								otherPeer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.GetAllActorInfos());
+ 							}
+ 						}
+ 					}
+@@ -298,6 +298,10 @@ namespace NekoNexus.Realtime.Server.Comm {
+ 							otherPeer.LobbyEventSender.SendLobbyChatMessage(peer.Actor.Cmid, peer.Actor.Name, trimmed);
+ 						}
+ 					}
++
++					// Android (4.3.10) players on this comm server; the master server does not echo
++					// chat back to the server it came from.
++					Legacy.LegacyCommPeer.BroadcastLobbyChat(peer.Actor.Cmid, peer.Actor.Name, trimmed);
+ 				}
+ 			}
+ 
+@@ -514,7 +518,7 @@ namespace NekoNexus.Realtime.Server.Comm {
+ 				DebugOperation(peer);
+ 
+ 				if (peer.Actor.AccessLevel >= MemberAccessLevel.Moderator) {
+-					peer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.Peers.Select(_ => _.Actor.ActorInfo).ToList());
++					peer.LobbyEventSender.SendFullPlayerListUpdate(LobbyManager.Instance.GetAllActorInfos());
+ 				}
+ 			}
+ 
+diff --git a/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.cs b/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.cs
+index 5c061d4..9475044 100644
+--- a/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.cs
++++ b/packages/Realtime/NekoNexus.Realtime/Server/Comm/Lobby/LobbyRoom.cs
+@@ -62,6 +62,8 @@ namespace NekoNexus.Realtime.Server.Comm {
+ 				peers.Remove(peer);
+ 			}
+ 
++			if (peer.Actor != null) Legacy.LegacyCommPeer.BroadcastPlayerLeft(peer.Actor.Cmid);
++
+ 			Log.Info($"{peer} left the lobby");
+ 
+ 			CommServerApplication.Instance.SocketClient?.SendSync(PacketType.PlayerLeft, peer, serverType: ServerType.Comm);
+diff --git a/packages/Realtime/NekoNexus.Realtime/Server/Config/ApplicationConfiguration.cs b/packages/Realtime/NekoNexus.Realtime/Server/Config/ApplicationConfiguration.cs
+index 865a8b8..f86c8c2 100644
+--- a/packages/Realtime/NekoNexus.Realtime/Server/Config/ApplicationConfiguration.cs
++++ b/packages/Realtime/NekoNexus.Realtime/Server/Config/ApplicationConfiguration.cs
+@@ -42,9 +42,10 @@ namespace NekoNexus.Realtime.Server {
+ 		[YamlMember]
+ 		public bool EnableChatLog = true;
+ 
+-		// Compatibility/testing only: legacy 4.3.10 currently supplies CMID without
+-		// a verifiable per-session credential. Keep guest chat disabled until the
+-		// Android patcher and server exchange an authenticated ticket.
++		// Relay lobby chat from Android (4.3.10) players to PC players. 4.3.10 supplies its
++		// CMID and name without a verifiable session ticket, so relayed messages are sent as
++		// "Name [Android]" with CMID 0 (see docs/android-4.3.10-realtime-protocol.md).
++		// PC -> Android chat and the shared roster work regardless of this setting.
+ 		[YamlMember]
+ 		public bool EnableLegacyGuestChat = false;
+ 
+diff --git a/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyCommPeer.cs b/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyCommPeer.cs
+index 43f04f5..3ff95d1 100644
+--- a/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyCommPeer.cs
++++ b/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyCommPeer.cs
+@@ -2,118 +2,396 @@ using System;
+ using System.Collections.Generic;
+ using System.Linq;
+ using System.Text;
+-using PhotonHostRuntimeInterfaces;
++using Cmune.DataCenter.Common.Entities;
+ using NekoNexus.Realtime.Server.Comm;
+ using Photon.SocketServer;
++using PhotonHostRuntimeInterfaces;
++using UberStrike.Core.Models;
+ using static NekoNexus.WebSocket;
+ 
+ namespace NekoNexus.Realtime.Server.Legacy {
+ 	/// <summary>
+-	/// UberStrike 4.3.10 comm/lobby peer.
+-	/// The Android ClientCommCenter.SendLobbyChatMessage method (Assembly-CSharp.dll)
+-	/// uses method ID 25 with [CMID, message] arguments.
+-	/// The name is UNTRUSTED and never forwarded as a PC identity.
++	/// UberStrike 4.3.10 (Android) client on the comm / lobby server.
++	///
++	/// Flow recovered from the 4.3.10 client (CommConnectionManager, PhotonPeerListener,
++	/// ClientCommCenter):
++	/// <list type="number">
++	/// <item>connect + MessageToApplication 1 (handshake), 2 (server load) - handled by <see cref="LegacyPeer"/></item>
++	/// <item>PhotonGameJoin 0x58 for RoomMetaData(88, "The CommServer", server). The reply must carry
++	///   {9: actor id, 4: CmuneRoomID bytes, 200: build level (false), 201: server ticks}; only then is
++	///   the client "in the room" and allowed to call ClientCommCenter methods.</item>
++	/// <item>MessageToServer 0x52 to network id 4 (ClientCommCenter, a global class with a fixed id):
++	///   method 1 JoinCommServer(CommActorInfo), 25 SendLobbyChatMessage(actorId, message), ...</item>
++	/// <item>server -> client calls are events with code 0 and {101: network id, 100: method, 103: args}.</item>
++	/// </list>
++	///
++	/// Identity: 4.3.10 sends its CMID as the Photon application id and its name inside
++	/// CommActorInfo, with no verifiable session ticket. Both can be forged by a modified client, so
++	/// Android players are shown as "Name [Android]", chat is relayed with CMID 0 (PC moderation tools
++	/// never target an account because of a forged id) and relaying Android chat to PC is opt-in
++	/// through EnableLegacyGuestChat.
+ 	/// </summary>
+ 	public class LegacyCommPeer : LegacyPeer {
+-		// Verified against Android 4.3.10 ClientCommCenter.OnLobbyChatMessage attribute.
+-		private const byte LobbyChatMethodId = 25;
+-		private short? lobbyInstanceId;
+-		private DateTime lastChatUtc = DateTime.MinValue;
++		/// <summary>[NetworkClass(4)] ClientCommCenter.</summary>
++		public const short CommCenterNetworkId = 4;
++
++		/// <summary>ClientCommCenter method ids (NetworkMethod attributes / SendMethodToServer ids).</summary>
++		public static class Method {
++			// client -> server
++			public const byte JoinCommServer = 1;          // (CommActorInfo me)
++			public const byte SendUpdatedActorInfo = 3;    // (CommActorInfo me)
++			public const byte SendUpdateResetLobby = 4;    // ()
++			public const byte UpdatePlayerRoom = 21;       // (CmuneRoomID room)
++			public const byte ResetPlayerRoom = 22;        // ()
++			public const byte SendContactList = 43;        // (List<int> cmids)
++			public const byte UpdateContacts = 44;         // (...)
++			public const byte SendUpdateAllPlayers = 47;   // ()
++			// both directions
++			public const byte LobbyChat = 25;              // up: (int actorId, string msg)  down: (int cmid, int actorId, string name, string msg)
++			// server -> client
++			public const byte OnPlayerLeft = 2;            // (int cmid)
++			public const byte OnPlayerUpdate = 3;          // (SyncObject actor)
++			public const byte OnFullPlayerListUpdate = 4;  // (List<SyncObject> actors)
++		}
++
++		private const string AndroidSuffix = " [Android]";
++		private const int MaxMessageLength = 140;
++
+ 		private static readonly object RegistryLock = new object();
+-		private static readonly HashSet<LegacyCommPeer> ConnectedPeers = new HashSet<LegacyCommPeer>();
++		private static readonly List<LegacyCommPeer> ConnectedPeers = new List<LegacyCommPeer>();
+ 		private static readonly ProfanityFilter.ProfanityFilter ProfanityFilter = new ProfanityFilter.ProfanityFilter();
+ 
++		private readonly object stateLock = new object();
++		private bool hasJoinedRoom;
++		private bool hasJoinedLobby;
++		private DateTime lastChatUtc = DateTime.MinValue;
++		private bool toldChatDisabled;
++
++		public string PlayerName { get; private set; } = "";
++		public byte ChannelValue { get; private set; } = (byte)ChannelType.Android;
++		public int ActorId => Cmid;
++		public bool InLobby { get { lock (stateLock) return hasJoinedLobby; } }
++
++		/// <summary>Name as shown to everyone else.</summary>
++		public string DisplayName => (string.IsNullOrWhiteSpace(PlayerName) ? $"Player {Cmid}" : PlayerName) + AndroidSuffix;
++
+ 		public LegacyCommPeer(InitRequest initRequest) : base(initRequest) {
+ 			lock (RegistryLock) ConnectedPeers.Add(this);
+ 		}
+ 
+ 		protected override string Name => "LegacyComm";
+ 
++		private static ApplicationConfiguration Config => CommServerApplication.Instance.Configuration;
++
++		// ------------------------------------------------------------------ operations
++
+ 		protected override bool OnLegacyOperation(OperationRequest request) {
+-			if (request.OperationCode != LegacyOperationCode.MessageToServer) return false;
+-			if (!request.Parameters.TryGetValue(LegacyParameterKey.InstanceId, out var instanceObj)
+-				|| !(instanceObj is short instanceId)) return false;
+-			if (!request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var methodObj)
+-				|| !(methodObj is byte methodId)) return false;
+-			// IDs taken from Android 4.3.10 ClientCommCenter's RPC attributes.
+-			// Capturing its instance ID on a roster/chat message lets a silent
+-			// Android user receive PC lobby chat before sending a message.
+-			if (methodId == 2 || methodId == 3 || methodId == 4 ||
+-				methodId == 23 || methodId == 24 || methodId == 25 ||
+-				methodId == 26 || methodId == 42) {
+-				lobbyInstanceId = instanceId;
+-			}
+-			if (methodId != LobbyChatMethodId) return false;
+-
+-			// Client 4.3.10 sends a numeric CMID in the transport application id.
+-			// This value is spoofable: there is no authenticated user session here.
+-			// Keep guest chat disabled by default and never impersonate the supplied name.
+-			if (!CommServerApplication.Instance.Configuration.EnableLegacyGuestChat) {
+-				Log.Warn($"[{Name}] cmid {Cmid}: legacy guest chat rejected (EnableLegacyGuestChat is false)");
+-				return true;
++			switch (request.OperationCode) {
++				case LegacyOperationCode.PhotonGameJoin:
++					HandleJoinRoom(request);
++					return true;
++				case LegacyOperationCode.PhotonGameLeave:
++					HandleLeaveRoom();
++					return true;
++				case LegacyOperationCode.MessageToServer:
++					return HandleMessageToServer(request);
++				default:
++					return false;
++			}
++		}
++
++		private void HandleJoinRoom(OperationRequest request) {
++			var roomId = new LegacyRoomId { Number = 88 };
++			if (request.Parameters.TryGetValue(LegacyParameterKey.Bytes, out var raw) && raw is byte[] bytes) {
++				try {
++					var args = LegacySerialization.ToObjects(bytes);
++					if (args.Length > 0 && args[0] is LegacyRoomMetaData room) {
++						roomId = room.RoomId;
++						Log.Info($"[{Name}] cmid {Cmid}: joining comm room {room}");
++					}
++				} catch (LegacyProtocolException ex) {
++					Log.Warn($"[{Name}] cmid {Cmid}: unreadable join request ({ex.Message}), using default comm room");
++				}
++			}
++
++			if (Cmid <= 0) {
++				SendOperationResponse(new OperationResponse(LegacyOperationCode.PhotonGameJoin) {
++					ReturnCode = -1,
++					DebugMessage = "invalid cmid"
++				}, new SendParameters());
++				return;
++			}
++
++			lock (stateLock) hasJoinedRoom = true;
++
++			var response = new OperationResponse(LegacyOperationCode.PhotonGameJoin) { ReturnCode = 0 };
++			response.Parameters[LegacyParameterKey.ActorNr] = ActorId;
++			response.Parameters[LegacyParameterKey.GameId] = roomId.ToBytes();
++			response.Parameters[LegacyParameterKey.InitRoom] = false;
++			response.Parameters[LegacyParameterKey.ServerTicks] = (long)Environment.TickCount;
++			SendOperationResponse(response, new SendParameters());
++		}
++
++		private void HandleLeaveRoom() {
++			LeaveLobby();
++			lock (stateLock) hasJoinedRoom = false;
++			SendOperationResponse(new OperationResponse(LegacyOperationCode.PhotonGameLeave) { ReturnCode = 0 }, new SendParameters());
++		}
++
++		private bool HandleMessageToServer(OperationRequest request) {
++			if (!request.Parameters.TryGetValue(LegacyParameterKey.InstanceId, out var instanceObj) || !(instanceObj is short instanceId)
++				|| !request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var methodObj) || !(methodObj is byte methodId)) {
++				return false;
+ 			}
+ 
+-			if (Cmid <= 0 || !request.Parameters.TryGetValue(LegacyParameterKey.Bytes, out var data)
+-				|| !(data is byte[] payload) || payload.Length > 4096) return true;
++			if (instanceId != CommCenterNetworkId) {
++				Log.Debug($"[{Name}] cmid {Cmid}: call to network id {instanceId} method {methodId} ignored");
++				return true;
++			}
+ 
+ 			object[] args;
+ 			try {
++				request.Parameters.TryGetValue(LegacyParameterKey.Bytes, out var raw);
++				var payload = raw as byte[];
++				if (payload != null && payload.Length > 8192) return true;
+ 				args = LegacySerialization.ToObjects(payload);
+ 			} catch (LegacyProtocolException ex) {
+-				Log.Warn($"[{Name}] cmid {Cmid}: invalid lobby chat payload: {ex.Message}");
++				Log.Warn($"[{Name}] cmid {Cmid}: could not decode ClientCommCenter method {methodId}: {ex.Message}");
+ 				return true;
+ 			}
+ 
+-			if (args.Length != 2 || !(args[0] is int claimedCmid) || claimedCmid != Cmid || !(args[1] is string rawMessage)
+-				|| string.IsNullOrWhiteSpace(rawMessage)) return true;
++			switch (methodId) {
++				case Method.JoinCommServer:
++					HandleJoinCommServer(args);
++					return true;
++				case Method.SendUpdatedActorInfo:
++					if (args.Length > 0 && args[0] is LegacySyncObject info) ReadActorInfo(info);
++					return true;
++				case Method.SendUpdateResetLobby:
++				case Method.SendUpdateAllPlayers:
++					SendFullPlayerList();
++					return true;
++				case Method.LobbyChat:
++					HandleLobbyChat(args);
++					return true;
++				case Method.UpdatePlayerRoom:
++				case Method.ResetPlayerRoom:
++				case Method.SendContactList:
++				case Method.UpdateContacts:
++					return true; // nothing to do server side yet
++				default:
++					return false; // LegacyPeer logs it once
++			}
++		}
++
++		// ------------------------------------------------------------------ lobby / roster
++
++		private void ReadActorInfo(LegacySyncObject info) {
++			if (info[LegacyActorField.PlayerName] is string name) PlayerName = CleanName(name);
++			if (info[LegacyActorField.Channel] is byte channel) ChannelValue = channel;
++			// The client also sends its access level; it is ignored on purpose (it is not verifiable).
++		}
++
++		private void HandleJoinCommServer(object[] args) {
++			if (args.Length > 0 && args[0] is LegacySyncObject info) ReadActorInfo(info);
++
++			bool firstJoin;
++			lock (stateLock) {
++				if (!hasJoinedRoom) return;
++				firstJoin = !hasJoinedLobby;
++				hasJoinedLobby = true;
++			}
++
++			Log.Info($"[{Name}] cmid {Cmid}: joined the lobby as '{DisplayName}'");
++			if (!firstJoin) {
++				SendFullPlayerList();
++				return;
++			}
++
++			// Refreshes the roster of every PC player and (through BroadcastFullPlayerList) of every
++			// Android player, this one included.
++			try {
++				LobbyManager.Instance.UpdatePlayerList();
++			} catch (Exception ex) {
++				Log.Warn($"[{Name}] cmid {Cmid}: failed to refresh player lists", ex);
++				SendFullPlayerList();
++			}
++		}
++
++		private void LeaveLobby() {
++			bool wasInLobby;
++			lock (stateLock) {
++				wasInLobby = hasJoinedLobby;
++				hasJoinedLobby = false;
++			}
++			if (!wasInLobby) return;
++
++			foreach (var other in LobbyPeers().Where(p => p != this)) {
++				other.SendCall(Method.OnPlayerLeft, Cmid);
++			}
++			try {
++				foreach (var pc in LobbyManager.Instance.Peers.ToList()) {
++					pc.LobbyEventSender.SendPlayerLeft(Cmid, true);
++				}
++			} catch (Exception ex) {
++				Log.Warn($"[{Name}] cmid {Cmid}: failed to notify PC lobby of leave", ex);
++			}
++		}
++
++		public LegacySyncObject ToSyncObject() {
++			var sync = new LegacySyncObject { Id = ActorId };
++			sync[LegacyActorField.Cmid] = Cmid;
++			sync[LegacyActorField.PlayerName] = DisplayName;
++			sync[LegacyActorField.Channel] = ChannelValue;
++			sync[LegacyActorField.AccessLevel] = (byte)MemberAccessLevel.Default;
++			return sync;
++		}
++
++		private static LegacySyncObject ToSyncObject(CommActorInfo pc) {
++			var sync = new LegacySyncObject { Id = pc.Cmid };
++			sync[LegacyActorField.Cmid] = pc.Cmid;
++			sync[LegacyActorField.PlayerName] = pc.PlayerName ?? "";
++			if (!string.IsNullOrEmpty(pc.ClanTag)) sync[LegacyActorField.ClanTag] = pc.ClanTag;
++			sync[LegacyActorField.Channel] = (byte)pc.Channel;
++			sync[LegacyActorField.AccessLevel] = (byte)pc.AccessLevel;
++			return sync;
++		}
++
++		private void SendFullPlayerList() {
++			var list = new List<LegacySyncObject>();
++			var seen = new HashSet<int>();
++			try {
++				foreach (var pc in LobbyManager.Instance.Peers.ToList()) {
++					if (pc?.Actor?.ActorInfo == null || !seen.Add(pc.Actor.Cmid)) continue;
++					list.Add(ToSyncObject(pc.Actor.ActorInfo));
++				}
++			} catch (Exception ex) {
++				Log.Warn($"[{Name}] cmid {Cmid}: could not read PC lobby", ex);
++			}
++			foreach (var android in LobbyPeers()) {
++				if (seen.Add(android.Cmid)) list.Add(android.ToSyncObject());
++			}
++			SendCall(Method.OnFullPlayerListUpdate, list);
++		}
++
++		// ------------------------------------------------------------------ chat
++
++		private void HandleLobbyChat(object[] args) {
++			// SendLobbyChatMessage sends (ActorIdSecure, message) - the first value is the actor id the
++			// server assigned in the join reply, not the CMID. Identity always comes from this peer.
++			if (args.Length != 2 || !(args[1] is string rawMessage) || !InLobby) return;
+ 
+ 			var now = DateTime.UtcNow;
+-			if ((now - lastChatUtc).TotalMilliseconds < 750) return true;
++			if ((now - lastChatUtc).TotalMilliseconds < 750) return;
+ 			lastChatUtc = now;
+ 
+-			var cleaned = new StringBuilder();
+-			foreach (char ch in rawMessage) {
+-				if (!char.IsControl(ch)) cleaned.Append(ch);
+-				if (cleaned.Length >= 140) break;
+-			}
+-			if (cleaned.Length == 0) return true;
+-			string message = ProfanityFilter.CensorString(cleaned.ToString());
+-			// This guest identity is deliberately not the unverified player name/CMID.
+-			// Real account identity and mute/ban enforcement require a signed login ticket.
+-			CommServerApplication.Instance.SocketClient?.SendSync(
+-				PacketType.ChatMessage,
+-				new SocketChatMessage { Cmid = 0, Name = "Android Guest", Message = message },
++			var message = CleanMessage(rawMessage);
++			if (message.Length == 0) return;
++
++			if (!Config.EnableLegacyGuestChat) {
++				if (!toldChatDisabled) {
++					toldChatDisabled = true;
++					SendCall(Method.LobbyChat, 0, 0, "System", "Chat from Android is disabled on this server (EnableLegacyGuestChat).");
++				}
++				Log.Debug($"[{Name}] cmid {Cmid}: lobby chat not relayed (EnableLegacyGuestChat is false)");
++				return;
++			}
++
++			var name = DisplayName;
++			if (Config.EnableChatLog) Log.Info($"[Lobby] {name} (cmid {Cmid}): {message}");
++
++			// Other comm servers, through the master server (it does not echo back to us).
++			CommServerApplication.Instance.SocketClient?.SendSync(PacketType.ChatMessage,
++				new SocketChatMessage { Cmid = 0, Name = name, Message = message },
+ 				serverType: ServerType.Comm);
+-			return true;
++
++			// PC players on this comm server.
++			try {
++				foreach (var pc in LobbyManager.Instance.GlobalLobby.Peers.ToList()) {
++					pc.LobbyEventSender.SendLobbyChatMessage(0, name, message);
++				}
++			} catch (Exception ex) {
++				Log.Warn($"[{Name}] cmid {Cmid}: failed to deliver chat to PC peers", ex);
++			}
++
++			// Other Android players (the sender already shows its own message).
++			BroadcastLobbyChat(0, name, message, this);
+ 		}
+ 
+ 		/// <summary>
+-		/// Translate PC/master lobby chat to the legacy Android network-message event.
+-		/// The client's OnLobbyChatMessage is marked method 25 and accepts
+-		/// (int cmid, int context, string name, string message).
+-		/// Only peers whose comm instance ID has been observed can receive it.
++		/// Deliver a lobby chat line (from PC or another Android player) to every Android player in
++		/// the lobby, as ClientCommCenter.OnLobbyChatMessage(cmid, actorId, name, message).
+ 		/// </summary>
+-		public static void BroadcastLobbyChat(int cmid, string name, string message) {
++		public static void BroadcastLobbyChat(int cmid, string name, string message, LegacyCommPeer except = null) {
+ 			if (string.IsNullOrWhiteSpace(message)) return;
+-			LegacyCommPeer[] peers;
+-			lock (RegistryLock) peers = ConnectedPeers.Where(p => p.lobbyInstanceId.HasValue).ToArray();
+-			foreach (var peer in peers) {
+-				try {
+-					var data = new EventData(LegacyOperationCode.MessageToAll, new Dictionary<byte, object> {
+-						{ LegacyParameterKey.InstanceId, peer.lobbyInstanceId.Value },
+-						{ LegacyParameterKey.MethodId, LobbyChatMethodId },
+-						{ LegacyParameterKey.Bytes, LegacySerialization.ToBytes(cmid, 0, name ?? "", message) }
+-					});
+-					peer.SendEvent(data, new SendParameters());
+-				} catch (Exception ex) {
+-					Log.Warn($"[LegacyComm] cmid {peer.Cmid}: failed to deliver lobby message", ex);
+-				}
++			foreach (var peer in LobbyPeers()) {
++				if (peer == except) continue;
++				peer.SendCall(Method.LobbyChat, cmid, cmid, name ?? "", message);
+ 			}
+ 		}
+ 
+-		protected override void OnDisconnect(DisconnectReason reasonCode, string reasonDetail) {
+-			lock (RegistryLock) ConnectedPeers.Remove(this);
+-			base.OnDisconnect(reasonCode, reasonDetail);
++		/// <summary>A PC player left the lobby.</summary>
++		public static void BroadcastPlayerLeft(int cmid) {
++			foreach (var peer in LobbyPeers()) peer.SendCall(Method.OnPlayerLeft, cmid);
++		}
++
++		/// <summary>The PC lobby changed (someone joined): resend the roster to Android players.</summary>
++		public static void BroadcastFullPlayerList() {
++			foreach (var peer in LobbyPeers()) peer.SendFullPlayerList();
++		}
++
++		/// <summary>Android players as PC CommActorInfo entries, for the PC lobby roster.</summary>
++		public static List<CommActorInfo> GetLobbyActorInfos(ICollection<int> excludeCmids = null) {
++			var result = new List<CommActorInfo>();
++			foreach (var peer in LobbyPeers()) {
++				if (excludeCmids != null && excludeCmids.Contains(peer.Cmid)) continue;
++				result.Add(new CommActorInfo {
++					Cmid = peer.Cmid,
++					PlayerName = peer.DisplayName,
++					Channel = ChannelType.Android,
++					AccessLevel = MemberAccessLevel.Default,
++				});
++			}
++			return result;
++		}
++
++		private static List<LegacyCommPeer> LobbyPeers() {
++			lock (RegistryLock) return ConnectedPeers.Where(p => p.InLobby).ToList();
++		}
++
++		// ------------------------------------------------------------------ helpers
++
++		/// <summary>Call a ClientCommCenter method on this client (event code 0).</summary>
++		private void SendCall(byte methodId, params object[] args) {
++			try {
++				var data = new EventData(LegacyEventCode.NetworkMessage, new Dictionary<byte, object> {
++					{ LegacyParameterKey.InstanceId, CommCenterNetworkId },
++					{ LegacyParameterKey.MethodId, methodId },
++					{ LegacyParameterKey.Bytes, LegacySerialization.ToBytes(args) }
++				});
++				SendEvent(data, new SendParameters());
++			} catch (Exception ex) {
++				Log.Warn($"[{Name}] cmid {Cmid}: failed to send ClientCommCenter method {methodId}", ex);
++			}
++		}
++
++		private static string CleanName(string name) {
++			var sb = new StringBuilder();
++			foreach (var ch in name ?? "") {
++				if (!char.IsControl(ch) && ch != '[' && ch != ']') sb.Append(ch);
++				if (sb.Length >= 24) break;
++			}
++			return sb.ToString().Trim();
++		}
++
++		private static string CleanMessage(string raw) {
++			var sb = new StringBuilder();
++			foreach (var ch in raw ?? "") {
++				if (!char.IsControl(ch)) sb.Append(ch);
++				if (sb.Length >= MaxMessageLength) break;
++			}
++			var text = sb.ToString().Trim();
++			return text.Length == 0 ? text : ProfanityFilter.CensorString(text);
+ 		}
+ 
+ 		protected override bool OnApplicationMethod(byte methodId, object[] args, out object[] reply) {
+@@ -124,9 +402,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 					return true;
+ 				case LegacyApplicationMethod.ServerLoad:
+ 					var app = CommServerApplication.Instance;
++					int androidPlayers;
++					lock (RegistryLock) androidPlayers = ConnectedPeers.Count;
+ 					var load = new LegacyServerLoadData {
+-						PlayersConnected = app.Peers,
+-						PeersConnected = app.Peers,
++						PlayersConnected = app.Peers + androidPlayers,
++						PeersConnected = app.Peers + androidPlayers,
+ 						RoomsCreated = 1,
+ 						MaxPlayerCount = app.Configuration.CommApplicationSettings.MaxPlayerCount
+ 					};
+@@ -137,5 +417,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 					return false;
+ 			}
+ 		}
++
++		protected override void OnDisconnect(DisconnectReason reasonCode, string reasonDetail) {
++			LeaveLobby();
++			lock (RegistryLock) ConnectedPeers.Remove(this);
++			base.OnDisconnect(reasonCode, reasonDetail);
++		}
+ 	}
+ }
+diff --git a/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyProtocol.cs b/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyProtocol.cs
+index b4dfc5b..bb1549b 100644
+--- a/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyProtocol.cs
++++ b/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacyProtocol.cs
+@@ -31,8 +31,21 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 		public const byte RegisterGameServer = 0x5C;
+ 	}
+ 
++	/// <summary>
++	/// Event codes the 4.3.10 PhotonPeerListener.OnEvent understands. Code 0 is a remote call:
++	/// {101: network id (short), 100: method id (byte), 103: args}. 3/4/5 are lobby room-list
++	/// update / refresh / removal with a Hashtable in key 42. Anything else is logged as unhandled.
++	/// </summary>
++	public static class LegacyEventCode {
++		public const byte NetworkMessage = 0;
++		public const byte RoomListUpdate = 3;
++		public const byte RoomListRefresh = 4;
++		public const byte RoomListRemoval = 5;
++	}
++
+ 	/// <summary>Photon parameter keys used by the 4.3.10 SDK (ParameterKeys).</summary>
+ 	public static class LegacyParameterKey {
++		/// <summary>PhotonGameJoin reply: CmuneRoomID bytes of the joined room.</summary>
+ 		public const byte GameId = 4;
+ 		public const byte ActorNr = 9;
+ 		public const byte Actors = 11;
+@@ -48,6 +61,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 		public const byte RoomId = 120;
+ 		public const byte LobbyRoomUpdate = 122;
+ 		public const byte LobbyRoomDelete = 123;
++		/// <summary>PhotonGameJoin reply, bool: true = BuildLevel, false = ClearLevel.</summary>
+ 		public const byte InitRoom = 200;
+ 		public const byte ServerTicks = 201;
+ 		public const byte AccessLevel = 205;
+diff --git a/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacySerialization.cs b/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacySerialization.cs
+index f4c7d77..bb2bfd8 100644
+--- a/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacySerialization.cs
++++ b/packages/Realtime/NekoNexus.Realtime/Server/Legacy/LegacySerialization.cs
+@@ -8,8 +8,9 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 	/// server needs. Every value is written as [CmuneDataType byte][payload]. Numbers are
+ 	/// BIG-endian (the client reverses BitConverter output on little-endian CPUs); strings are
+ 	/// [int16 BE char count][UTF-16LE chars]; byte arrays are [int32 BE count][bytes].
+-	/// Game-specific types (ActorInfo, GameData, Vector3 ...) are not handled yet and raise
+-	/// <see cref="LegacyProtocolException"/> so callers can log them.
++	/// Also handles the lobby types the comm server needs: CmuneRoomID, RoomMetaData, SyncObject
++	/// (CommActorInfo) and their lists. Game-specific types (GameData, CmuneTransform ...) are not
++	/// handled yet and raise <see cref="LegacyProtocolException"/> so callers can log them.
+ 	/// </summary>
+ 	public static class LegacySerialization {
+ 		public static class Type {
+@@ -24,6 +25,17 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 			public const byte Float = 0x0A;
+ 			public const byte String = 0x0C;
+ 			public const byte ArrayByte = 0x0F;
++			public const byte ListInt16 = 0x12;
++			public const byte ListInt32 = 0x14;
++			public const byte ListString = 0x1A;
++			public const byte Vector3 = 0x1E;
++			public const byte Quaternion = 0x1F;
++			public const byte RoomMetaData = 0x28;
++			public const byte RoomId = 0x2D;
++			/// <summary>A SyncObject that the client turns into a CommActorInfo.</summary>
++			public const byte CommActorInfo = 0x2E;
++			public const byte SyncObject = 0x30;
++			public const byte ListSyncObject = 0x35;
+ 			/// <summary>Named PerformanceData in CmuneDataType; carries ServerLoadData.</summary>
+ 			public const byte ServerLoadData = 0x2F;
+ 		}
+@@ -57,6 +69,18 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 					WriteInt(bytes, load.RoomsCreated);
+ 					WriteFloat(bytes, load.MaxPlayerCount);
+ 					break;
++				case LegacyRoomId room: bytes.Add(Type.RoomId); room.Write(bytes); break;
++				case LegacySyncObject sync: bytes.Add(sync.AsCommActorInfo ? Type.CommActorInfo : Type.SyncObject); sync.Write(bytes); break;
++				case List<LegacySyncObject> list:
++					bytes.Add(Type.ListSyncObject);
++					WriteBigEndian(bytes, BitConverter.GetBytes((short)list.Count));
++					foreach (var item in list) item.Write(bytes);
++					break;
++				case List<int> ints:
++					bytes.Add(Type.ListInt32);
++					WriteBigEndian(bytes, BitConverter.GetBytes((short)ints.Count));
++					foreach (var item in ints) WriteInt(bytes, item);
++					break;
+ 				default:
+ 					throw new LegacyProtocolException($"cannot serialize {value?.GetType().Name ?? "null"} for a 4.3.10 client");
+ 			}
+@@ -119,12 +143,86 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 						RoomsCreated = ReadInt(bytes, ref i),
+ 						MaxPlayerCount = BitConverter.ToSingle(ReadBigEndian(bytes, ref i, 4), 0),
+ 					};
++				case Type.ListInt16: {
++					var n = ReadCount(bytes, ref i);
++					var list = new List<short>(n);
++					for (var k = 0; k < n; k++) list.Add(BitConverter.ToInt16(ReadBigEndian(bytes, ref i, 2), 0));
++					return list;
++				}
++				case Type.ListInt32: {
++					var n = ReadCount(bytes, ref i);
++					var list = new List<int>(n);
++					for (var k = 0; k < n; k++) list.Add(ReadInt(bytes, ref i));
++					return list;
++				}
++				case Type.ListString: {
++					var n = ReadCount(bytes, ref i);
++					var list = new List<string>(n);
++					for (var k = 0; k < n; k++) list.Add(ReadString(bytes, ref i));
++					return list;
++				}
++				case Type.Vector3: return new[] { ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i) };
++				case Type.Quaternion: return new[] { ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i), ReadFloat(bytes, ref i) };
++				case Type.RoomMetaData: return LegacyRoomMetaData.Read(bytes, ref i);
++				case Type.RoomId: return LegacyRoomId.Read(bytes, ref i);
++				case Type.CommActorInfo: {
++					var sync = LegacySyncObject.Read(bytes, ref i);
++					sync.AsCommActorInfo = true;
++					return sync;
++				}
++				case Type.SyncObject: return LegacySyncObject.Read(bytes, ref i);
++				case Type.ListSyncObject: {
++					var n = ReadCount(bytes, ref i);
++					var list = new List<LegacySyncObject>(n);
++					for (var k = 0; k < n; k++) list.Add(LegacySyncObject.Read(bytes, ref i));
++					return list;
++				}
+ 				default:
+ 					throw new LegacyProtocolException($"unsupported 4.3.10 data type 0x{type:X2} at offset {i - 1}");
+ 			}
+ 		}
+ 
+ 		public static int ReadInt(byte[] bytes, ref int i) => BitConverter.ToInt32(ReadBigEndian(bytes, ref i, 4), 0);
++		public static float ReadFloat(byte[] bytes, ref int i) => BitConverter.ToSingle(ReadBigEndian(bytes, ref i, 4), 0);
++		public static ushort ReadUShort(byte[] bytes, ref int i) => BitConverter.ToUInt16(ReadBigEndian(bytes, ref i, 2), 0);
++
++		private static int ReadCount(byte[] bytes, ref int i) {
++			var n = BitConverter.ToInt16(ReadBigEndian(bytes, ref i, 2), 0);
++			if (n < 0 || n > 4096) throw new LegacyProtocolException($"invalid collection size {n}");
++			return n;
++		}
++
++		/// <summary>DefaultByteConverter "small" string: [byte char count][UTF-16LE], max 127 chars.</summary>
++		public static string ReadSmallString(byte[] bytes, ref int i) {
++			var length = ReadByte(bytes, ref i);
++			if (length == 0) return string.Empty;
++			Require(bytes, i, length * 2);
++			var s = Encoding.Unicode.GetString(bytes, i, length * 2);
++			i += length * 2;
++			return s;
++		}
++
++		public static void WriteSmallString(List<byte> bytes, string value) {
++			if (string.IsNullOrEmpty(value)) {
++				bytes.Add(0);
++				return;
++			}
++			if (value.Length > 127) value = value.Substring(0, 127);
++			bytes.Add((byte)value.Length);
++			bytes.AddRange(Encoding.Unicode.GetBytes(value));
++		}
++
++		public static byte ReadRawByte(byte[] bytes, ref int i) => ReadByte(bytes, ref i);
++
++		public static byte[] ReadRaw(byte[] bytes, ref int i, int count) {
++			Require(bytes, i, count);
++			var value = new byte[count];
++			Buffer.BlockCopy(bytes, i, value, 0, count);
++			i += count;
++			return value;
++		}
++
++		public static void WriteRawShortBigEndian(List<byte> bytes, short value) => WriteBigEndian(bytes, BitConverter.GetBytes(value));
+ 
+ 		public static string ReadString(byte[] bytes, ref int i) {
+ 			var length = BitConverter.ToInt16(ReadBigEndian(bytes, ref i, 2), 0);
+@@ -154,4 +252,120 @@ namespace NekoNexus.Realtime.Server.Legacy {
+ 				throw new LegacyProtocolException($"truncated 4.3.10 payload (need {count} bytes at {offset}, have {bytes.Length})");
+ 		}
+ 	}
++
++	/// <summary>
++	/// UberStrike.Realtime.UnitySdk.CmuneRoomID: [int32 BE room number][ConnectionAddress: 4 IP bytes,
++	/// uint16 BE port]. Kept as raw bytes so ids from the client are echoed back unchanged.
++	/// </summary>
++	public sealed class LegacyRoomId {
++		public const int Size = 10;
++		public int Number { get; set; }
++		public byte[] Address { get; set; } = new byte[6];
++
++		public static LegacyRoomId Read(byte[] bytes, ref int i) {
++			var number = LegacySerialization.ReadInt(bytes, ref i);
++			return new LegacyRoomId { Number = number, Address = LegacySerialization.ReadRaw(bytes, ref i, 6) };
++		}
++
++		public void Write(List<byte> bytes) {
++			LegacySerialization.WriteInt(bytes, Number);
++			var address = Address ?? new byte[6];
++			if (address.Length != 6) throw new LegacyProtocolException("CmuneRoomID address must be 6 bytes");
++			bytes.AddRange(address);
++		}
++
++		public byte[] ToBytes() {
++			var bytes = new List<byte>(Size);
++			Write(bytes);
++			return bytes.ToArray();
++		}
++
++		public string Server => Address == null || Address.Length != 6 ? "" :
++			$"{Address[0]}.{Address[1]}.{Address[2]}.{Address[3]}:{(Address[4] << 8) | Address[5]}";
++
++		public override string ToString() => $"{Number}@{Server}";
++	}
++
++	/// <summary>UberStrike.Realtime.UnitySdk.RoomMetaData as sent with PhotonGameJoin (0x58).</summary>
++	public sealed class LegacyRoomMetaData {
++		public string Name { get; set; } = "";
++		public string Password { get; set; } = "";
++		public byte MaxPlayers { get; set; }
++		public byte InPlayers { get; set; }
++		public byte Tag { get; set; }
++		public LegacyRoomId RoomId { get; set; } = new LegacyRoomId();
++
++		public static LegacyRoomMetaData Read(byte[] bytes, ref int i) => new LegacyRoomMetaData {
++			Name = LegacySerialization.ReadSmallString(bytes, ref i),
++			Password = LegacySerialization.ReadSmallString(bytes, ref i),
++			MaxPlayers = LegacySerialization.ReadRawByte(bytes, ref i),
++			InPlayers = LegacySerialization.ReadRawByte(bytes, ref i),
++			Tag = LegacySerialization.ReadRawByte(bytes, ref i),
++			RoomId = LegacyRoomId.Read(bytes, ref i),
++		};
++
++		public override string ToString() => $"'{Name}' {RoomId} ({InPlayers}/{MaxPlayers})";
++	}
++
++	/// <summary>
++	/// UberStrike.Realtime.UnitySdk.SyncObject: [int32 BE delta mask] and, when the mask is not 0,
++	/// [int32 BE id] followed by one type-prefixed value per set bit. The client walks bits 0..32
++	/// with <c>1 &lt;&lt; (i &amp; 31)</c>, so bit 0 is visited twice (i = 0 and i = 32); this
++	/// class reproduces that exactly, otherwise lists of SyncObjects go out of step.
++	/// </summary>
++	public sealed class LegacySyncObject {
++		public int Id { get; set; }
++		public SortedDictionary<int, object> Fields { get; } = new SortedDictionary<int, object>();
++		/// <summary>Write with CmuneDataType 0x2E (CommActorInfo) instead of 0x30 (SyncObject).</summary>
++		public bool AsCommActorInfo { get; set; }
++
++		public int DeltaCode {
++			get {
++				var code = 0;
++				foreach (var key in Fields.Keys) code |= key;
++				return code;
++			}
++		}
++
++		public object this[int tag] {
++			get => Fields.TryGetValue(tag, out var v) ? v : null;
++			set { if (value == null) Fields.Remove(tag); else Fields[tag] = value; }
++		}
++
++		public static LegacySyncObject Read(byte[] bytes, ref int i) {
++			var sync = new LegacySyncObject();
++			var delta = LegacySerialization.ReadInt(bytes, ref i);
++			if (delta == 0) return sync;
++			sync.Id = LegacySerialization.ReadInt(bytes, ref i);
++			for (var bit = 0; bit <= 32 && i < bytes.Length; bit++) {
++				var mask = 1 << (bit & 31);
++				if ((delta & mask) == 0) continue;
++				sync.Fields[mask] = LegacySerialization.ReadObject(bytes, ref i);
++			}
++			return sync;
++		}
++
++		public void Write(List<byte> bytes) {
++			var delta = DeltaCode;
++			LegacySerialization.WriteInt(bytes, delta);
++			if (delta == 0) return;
++			LegacySerialization.WriteInt(bytes, Id);
++			for (var bit = 0; bit <= 32; bit++) {
++				if (Fields.TryGetValue(1 << (bit & 31), out var value)) LegacySerialization.WriteObject(bytes, value);
++			}
++		}
++	}
++
++	/// <summary>Field bits of UberStrike.Realtime.UnitySdk.ActorInfo / CommActorInfo (FieldTag).</summary>
++	public static class LegacyActorField {
++		public const int Cmid = 0x01;
++		public const int PlayerName = 0x02;
++		public const int Channel = 0x04;
++		public const int CurrentRoom = 0x08;
++		public const int Ping = 0x10;
++		public const int ClanTag = 0x20;
++		public const int AccessLevel = 0x40;
++		public const int ModInformation = 0x200;
++		public const int ModerationFlag = 0x400;
++	}
+ }
+diff --git a/tests/LegacyRealtimeSmoke/Program.cs b/tests/LegacyRealtimeSmoke/Program.cs
+index 94f8bed..59f5506 100644
+--- a/tests/LegacyRealtimeSmoke/Program.cs
++++ b/tests/LegacyRealtimeSmoke/Program.cs
+@@ -33,6 +33,27 @@ internal static class Program {
+         Assert(LegacyOperationCode.MessageToServer == 0x52 &&
+                LegacyOperationCode.MessageToAll == 0x51, "legacy operation codes");
+ 
++        // SyncObject (CommActorInfo): [mask][id][typed fields], bit 0 is written twice.
++        var actor = new LegacySyncObject { Id = 5 };
++        actor[LegacyActorField.Cmid] = 9;
++        actor[LegacyActorField.PlayerName] = "Ab";
++        actor[LegacyActorField.AccessLevel] = (byte)3;
++        var actorBytes = LegacySerialization.ToBytes(actor);
++        var expectedActor = new byte[] { 0x30, 0,0,0,0x43, 0,0,0,5, 0x06,0,0,0,9, 0x0C,0,2,(byte)'A',0,(byte)'b',0, 0x01,3, 0x06,0,0,0,9 };
++        Assert(actorBytes.Length == expectedActor.Length, "sync object length");
++        for (var k = 0; k < expectedActor.Length; k++) Assert(actorBytes[k] == expectedActor[k], "sync object byte " + k);
++        var actorBack = (LegacySyncObject)LegacySerialization.ToObjects(actorBytes)[0];
++        Assert(actorBack.Id == 5 && (int)actorBack[LegacyActorField.Cmid] == 9 && (string)actorBack[LegacyActorField.PlayerName] == "Ab", "sync object round trip");
++        var actorList = LegacySerialization.ToObjects(LegacySerialization.ToBytes(new System.Collections.Generic.List<LegacySyncObject> { actor, actor }));
++        Assert(actorList.Length == 1 && ((System.Collections.Generic.List<LegacySyncObject>)actorList[0]).Count == 2, "sync object list");
++
++        // RoomMetaData from PhotonGameJoin: small strings, 3 bytes, CmuneRoomID (int + ip + port).
++        var room = new System.Collections.Generic.List<byte> { 0x28, 1, (byte)'C', 0, 0, 16, 2, 0, 0,0,0,0x58, 75,119,148,51, 0x13,0xBF };
++        var meta = (LegacyRoomMetaData)LegacySerialization.ToObjects(room.ToArray())[0];
++        Assert(meta.Name == "C" && meta.MaxPlayers == 16 && meta.RoomId.Number == 88 && meta.RoomId.Server == "75.119.148.51:5055", "room metadata");
++        Assert(meta.RoomId.ToBytes().Length == LegacyRoomId.Size, "room id size");
++        Assert(LegacyEventCode.NetworkMessage == 0, "remote calls use event code 0");
++
+         Console.WriteLine("Android 4.3.10 legacy codec smoke tests passed.");
+         return 0;
+     }
+-- 
+2.43.0
+
