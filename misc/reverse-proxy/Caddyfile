@@ -16,7 +16,7 @@
 # IPv4 address from the server list, so they keep their own IP. The master socket (8082) is server to
 # server only and must not be exposed to players.
 
-{$NEKONEXUS_SITE:nekonexus.example.com} {
+http://:5730 {
 	encode gzip
 
 	# SOAP web services. The path prefix is part of the route (/<version>/<Service>Contract.svc),

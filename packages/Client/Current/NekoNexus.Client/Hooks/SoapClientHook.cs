@@ -5,6 +5,8 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
+using System.Threading;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Xml;
 using UberStrike.WebService.Unity;
@@ -59,13 +61,37 @@ namespace NekoNexus.Client {
 
 			byte[] returnData = null;
 
-			using (var request = new WWW(Configuration.WebserviceBaseUrl + serviceName, byteArray, headers)) {
-				yield return request;
-				var responseBytes = request.bytes ?? new byte[0];
-				var responseText = request.text ?? string.Empty;
+			var url = Configuration.WebserviceBaseUrl + serviceName;
+			byte[] responseBytes;
+			string responseText;
+			string responseError;
+			bool responseDone;
+			if (UseWinHttp(url)) {
+				// Unity 4.6's WWW / Mono can't do TLS 1.2+; Windows' WinHTTP can (see WinHttp.cs).
+				WinHttp.Response result = null;
+				var worker = new Thread(() => result = WinHttp.Send("POST", url, byteArray, headers));
+				worker.IsBackground = true;
+				worker.Start();
+				while (worker.IsAlive)
+					yield return null;
+				responseBytes = result?.Body ?? new byte[0];
+				responseText = Encoding.UTF8.GetString(responseBytes).TrimStart('\uFEFF');
+				responseError = result == null ? "WinHTTP: no response" : result.Error;
+				responseDone = true;
+			} else {
+				using (var request = new WWW(url, byteArray, headers)) {
+					yield return request;
+					responseBytes = request.bytes ?? new byte[0];
+					responseText = request.text ?? string.Empty;
+					responseError = request.error;
+					responseDone = request.isDone;
+				}
+			}
+
+			{
 
 				if (WebServiceStatistics.IsEnabled) {
-					WebServiceStatistics.RecordWebServiceEnd(methodName, responseBytes.Length, request.isDone && string.IsNullOrEmpty(request.error));
+					WebServiceStatistics.RecordWebServiceEnd(methodName, responseBytes.Length, responseDone && string.IsNullOrEmpty(responseError));
 				}
 
 				try {
@@ -73,11 +99,11 @@ namespace NekoNexus.Client {
 						throw new Exception($"Simulated Webservice fail when calling {interfaceName}/{methodName}");
 					}
 
-					if (!request.isDone || !string.IsNullOrEmpty(request.error)) {
-						LogResponse(requestId, Time.realtimeSinceStartup, request.error, Time.time - startTime, 0);
+					if (!responseDone || !string.IsNullOrEmpty(responseError)) {
+						LogResponse(requestId, Time.realtimeSinceStartup, responseError, Time.time - startTime, 0);
 
 						throw new Exception(string.Concat(new string[] {
-							request.error,
+							responseError,
 							"\nWWW Url: ",
 							Configuration.WebserviceBaseUrl,
 							"\nService: ",
@@ -107,13 +133,13 @@ namespace NekoNexus.Client {
 								throw new Exception($"WWW Request to {Configuration.WebserviceBaseUrl}{serviceName} failed with content {responseText}");
 							}
 
-							LogResponse(requestId, Time.realtimeSinceStartup, "OK", Time.realtimeSinceStartup - startTime, request.bytes.Length);
+							LogResponse(requestId, Time.realtimeSinceStartup, "OK", Time.realtimeSinceStartup - startTime, responseBytes.Length);
 						} catch {
 							LogResponse(requestId, Time.time, responseText, Time.realtimeSinceStartup - startTime, 0);
 
 							throw new Exception($"Error reading XML return for method call {interfaceName}/{methodName}: {responseText}");
 						}
-					} else if (request.isDone && string.IsNullOrEmpty(request.error)) {
+					} else if (responseDone && string.IsNullOrEmpty(responseError)) {
 						throw new Exception($"WWW Request to {Configuration.WebserviceBaseUrl}{serviceName} returned an empty response.");
 					}
 
@@ -131,7 +157,7 @@ namespace NekoNexus.Client {
 				} catch (Exception ex) {
 					// Don't report transport failures through the same unavailable service, and never
 					// report a failed RecordException call recursively.
-					if (methodName != nameof(NekoNexusWebServiceClient.RecordException) && request.isDone && string.IsNullOrEmpty(request.error)) {
+					if (methodName != nameof(NekoNexusWebServiceClient.RecordException) && responseDone && string.IsNullOrEmpty(responseError)) {
 						try {
 							NekoNexusWebServiceClient.RecordException(PlayerDataManager.Cmid, ApplicationDataManager.Channel, ApplicationDataManager.Version, ex.Message, ex.StackTrace, DebugLogMessages.Console.ToHTML(), () => { });
 						} catch (Exception telemetryError) {
@@ -148,6 +174,13 @@ namespace NekoNexus.Client {
 			}
 
 			yield break;
+		}
+
+		/// <summary>HTTPS on Windows goes through WinHTTP (TLS 1.2/1.3). NEKONEXUS_SOAP_WWW=1 forces Unity's WWW.</summary>
+		internal static bool UseWinHttp(string url) {
+			return WinHttp.IsAvailable &&
+				url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+				Environment.GetEnvironmentVariable("NEKONEXUS_SOAP_WWW") != "1";
 		}
 
 		private static void LogRequest(int id, float time, int sizeBytes, string interfaceName, string serviceName, string methodName) {

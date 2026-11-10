@@ -269,10 +269,11 @@ namespace NekoNexus {
 										Data = payload
 									});
 
-									if (receiveTasks.ContainsKey(payloadObj.ConversationId)) {
-										receiveTasks[payloadObj.ConversationId].SetResult(payload);
-										receiveTasks.Remove(payloadObj.ConversationId);
+									TaskCompletionSource<object> waiting = null;
+									lock (receiveTasks) {
+										if (receiveTasks.TryGetValue(payloadObj.ConversationId, out waiting)) receiveTasks.Remove(payloadObj.ConversationId);
 									}
+									waiting?.TrySetResult(payload);
 
 									break;
 							}
@@ -311,32 +312,34 @@ namespace NekoNexus {
 			}
 
 			public async Task<object> Send(PacketType type, object payload, bool oneWay = true, Guid conversationId = default, ServerType serverType = ServerType.None) {
-				Payload payloadObj = default;
-				await Task.Run(() => {
-					if (!IsConnected) return;
-					SocketConnection.Send(Payload.Encode(type, payload, CryptoProvider, out payloadObj, oneWay, conversationId, serverType));
-				});
-
-				if (oneWay)
-					return null;
-
-				receiveTasks[payloadObj.ConversationId] = new TaskCompletionSource<object>();
-				receiveTask = receiveTasks[payloadObj.ConversationId].Task;
-
-				var timeout = Task.Delay(TimeSpan.FromSeconds(RECEIVE_TIMEOUT));
-
-				//Console.WriteLine("awaiting receive or timeout");
-				if (await Task.WhenAny(receiveTask, timeout) == timeout) {
-					Log.Error($"Failed to receive data within {RECEIVE_TIMEOUT} second(s).");
-					receiveTask = null;
-					return null;
+				// Request/reply: register the waiter BEFORE sending. It used to be registered after the
+				// send returned, so a fast reply (e.g. the web service answering LegacySession) could
+				// arrive first, be dropped, and the caller timed out with nothing.
+				TaskCompletionSource<object> reply = null;
+				if (!oneWay) {
+					if (conversationId == default) conversationId = Guid.NewGuid();
+					reply = new TaskCompletionSource<object>();
+					lock (receiveTasks) receiveTasks[conversationId] = reply;
 				}
 
-				var taskData = await receiveTask;
-				//Console.WriteLine("awaited response");
-				receiveTask = null;
+				try {
+					var sent = await Task.Run(() => {
+						if (!IsConnected) return false;
+						SocketConnection.Send(Payload.Encode(type, payload, CryptoProvider, out _, oneWay, conversationId, serverType));
+						return true;
+					});
 
-				return taskData;
+					if (oneWay || !sent) return null;
+
+					var timeout = Task.Delay(TimeSpan.FromSeconds(RECEIVE_TIMEOUT));
+					if (await Task.WhenAny(reply.Task, timeout) == timeout) {
+						Log.Error($"No reply to {type} within {RECEIVE_TIMEOUT} second(s).");
+						return null;
+					}
+					return await reply.Task;
+				} finally {
+					if (!oneWay) lock (receiveTasks) receiveTasks.Remove(conversationId);
+				}
 			}
 
 			public object SendSync(PacketType type, object payload, bool oneWay = true, Guid conversationId = default, ServerType serverType = ServerType.None) {

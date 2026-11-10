@@ -225,11 +225,9 @@ namespace NekoNexus.Client {
 		private IEnumerator DownloadUpdateCatalog(string updateUri, Action<UpdateCatalog> successCallback, Action<HttpResponse> errorCallback) {
 			Log.Info($"Attempting to download update catalog from {updateUri}");
 
-			// Use Unity's WWW (NOT System.Net): WWW has a working HTTPS path to this host - the game's
-			// SoapClient talks to the same https host via WWW successfully - whereas the old Mono
-			// System.Net TLS stack can't even complete the handshake ("authentication or decryption
-			// has failed").
-			using (WWW loader = new WWW(updateUri)) {
+			// Not System.Net: Mono's TLS can't complete a TLS 1.2+ handshake. WebDownload uses Windows'
+			// WinHTTP for https (TLS 1.2/1.3) and Unity's WWW for http.
+			using (var loader = WebDownload.Get(updateUri)) {
 				// Hard timeout: a hung request must never lock the game on "Checking for updates".
 				float elapsed = 0f;
 				while (!loader.isDone) {
@@ -513,7 +511,7 @@ namespace NekoNexus.Client {
 				progressPopup = PopupSystem.ShowProgress($"Downloading updates... ({FilesToUpdate.IndexOf(file) + 1}/{FilesToUpdate.Count})", $"{file.FileName} ({NekoNexusGUITools.FormatSize(file.FileSize)})");
 
 				var fileUri = NormalizeUri(string.Join("/", new string[] { file.RemoteURL ?? UpdateCatalogUrl, file.RemotePath, file.FileName }));
-				using (WWW loader = new WWW(fileUri)) {
+				using (var loader = WebDownload.Get(fileUri)) {
 					Log.Info($"Downloading remote file: {fileUri}");
 
 					// Hard timeout so a hung/stalled download can't freeze the install forever.

@@ -140,6 +140,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				gameBegun = true;
 			}
 			// ClientGameMode.OnStartGame (21): IsGameStarted gates position sending and interpolation.
+			Log.Info($"cmid {owner.Cmid}: game mode {networkId} registered, sent Begin (room state {room.State.CurrentStateId})");
 			Call(Rpc.Begin);
 			// If a round is already running, start the client's match clock right away.
 			if (room.RoundEndTime != int.MinValue && room.State.CurrentStateId == GameStateId.MatchRunning) {
@@ -277,6 +278,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 				team = (TeamID)t;
 			}
 			room.EnsureSpawnPoints(team);
+			Log.Info($"cmid {owner.Cmid}: joins the match in {room}({room.RoomId}) on team {team}");
 			Op(IGameRoomOperationsType.JoinGame, s => EnumProxy<TeamID>.Serialize(s, team));
 		}
 
@@ -346,6 +348,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 		}
 
 		public void Leave() {
+			Log.Info($"cmid {owner.Cmid}: leaving {room}({room.RoomId})");
 			if (ByCmid.TryGetValue(owner.Cmid, out var current) && current == this) ByCmid.TryRemove(owner.Cmid, out _);
 			try {
 				if (proxy.Room != null) proxy.Room.Leave(proxy);
@@ -437,6 +440,7 @@ namespace NekoNexus.Realtime.Server.Legacy {
 						case IGameRoomEventsType.MatchStart: {
 							var round = Int32Proxy.Deserialize(s);
 							var endTime = Int32Proxy.Deserialize(s);
+							Log.Info($"cmid {owner.Cmid}: match start (round {round}) -> phone");
 							Call(Rpc.MatchStart, round, endTime);
 							break;
 						}
@@ -812,8 +816,13 @@ namespace NekoNexus.Realtime.Server.Legacy {
 
 		// ============================================================== helpers
 
+		private bool warnedNoMode;
+
 		private void Call(byte methodId, params object[] args) {
-			if (ModeNetworkId == 0) return;
+			if (ModeNetworkId == 0) {
+				if (!warnedNoMode) { warnedNoMode = true; Log.Warn($"cmid {owner.Cmid}: room event dropped - the phone has not registered its game mode yet (method {methodId})"); }
+				return;
+			}
 			owner.SendGameModeCall(ModeNetworkId, methodId, args);
 		}
 

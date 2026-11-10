@@ -41,9 +41,11 @@ namespace NekoNexus.Realtime.Server.Legacy {
 					HandleJoin(request);
 					return true;
 				case LegacyOperationCode.PhotonGameLeave:
+					Log.Info($"[{Name}] cmid {Cmid}: leave room requested");
 					StopRoomList();
 					LeaveMatch();
 					SendOperationResponse(new OperationResponse(LegacyOperationCode.PhotonGameLeave) { ReturnCode = 0 }, new SendParameters());
+					Log.Info($"[{Name}] cmid {Cmid}: leave room answered");
 					return true;
 				case LegacyOperationCode.MessageToServer:
 				case LegacyOperationCode.MessageToAll:
@@ -192,7 +194,10 @@ namespace NekoNexus.Realtime.Server.Legacy {
 			if (current == null) return;
 			if (!request.Parameters.TryGetValue(LegacyParameterKey.InstanceId, out var idObj) || !(idObj is short networkId)) return;
 			if (!request.Parameters.TryGetValue(LegacyParameterKey.MethodId, out var mObj) || !(mObj is byte methodId)) return;
-			if (networkId != current.ModeNetworkId) return;
+			if (networkId != current.ModeNetworkId) {
+				Log.Debug($"[{Name}] cmid {Cmid}: call to network id {networkId} method {methodId} ignored (game mode is {current.ModeNetworkId})");
+				return;
+			}
 
 			object[] args;
 			try {

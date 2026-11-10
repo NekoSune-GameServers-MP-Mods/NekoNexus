@@ -359,10 +359,11 @@ export default class ApplicationWebService extends BaseWebService {
 
         const maps = await Map.findAll().then((mapList) =>
           mapList.filter((map) => {
-            if (map.FileName?.['4.3.10'] === undefined) return false;
-            // Android: advertise a map only when an Android-built bundle for it is hosted,
-            // otherwise the client lists it and then fails to download it.
+            // Android: advertise every map whose Android-built bundle is hosted (matched by scene
+            // name), with or without a "4.3.10" FileName in the database. A map missing from this
+            // list shows as "None" and greys out PC games on it, so Android players can't join them.
             if (isAndroid) return ApplicationWebService.findAndroidMapFile(map, androidMapFiles) !== null;
+            if (map.FileName?.['4.3.10'] === undefined) return false;
             // Only advertise maps whose scene ships with the standard client. The "extra" maps
             // (Space City / Spaceport Alpha / UberZone) carry a real 4.7.1 filename rather than
             // an empty one; their .unity3d isn't in the build, so loading them throws
