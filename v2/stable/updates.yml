@@ -1,5 +1,5 @@
-version: 2.1.2.38
-build: 4.7.20-261110-0114
+version: 2.1.2.39
+build: 4.7.20-261110-1107
 channel: stable
 platforms:
   win:
